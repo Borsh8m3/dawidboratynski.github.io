@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { createClient } from '@supabase/supabase-js';
 
 const supabase = createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY);
@@ -13,13 +13,12 @@ export default function App() {
   const [recipes, setRecipes] = useState([]);
   const [mealPlan, setMealPlan] = useState([]);
   const [weekOffset, setWeekOffset] = useState(0);
-  const [isMobile, setIsMobile] = useState(window.innerWidth < 850);
+  const [isMobile, setIsMobile] = useState(window.innerWidth < 900);
 
-  // Modale i stany
   const [activeModal, setActiveModal] = useState(null); 
   const [selectedCell, setSelectedCell] = useState(null);
   const [viewingRecipe, setViewingRecipe] = useState(null);
-  const [filterCategory, setFilterCategory] = useState('');
+  const [filterCategory, setFilterCategory] = useState(''); 
   const [recipeListCategory, setRecipeListCategory] = useState('Obiad');
 
   const [newProd, setNewProd] = useState({ id: null, name: '', price: '', amount: '', unit: 'kg' });
@@ -28,9 +27,8 @@ export default function App() {
 
   const handleLogout = useCallback(() => supabase.auth.signOut(), []);
 
-  // Śledzenie szerokości ekranu
   useEffect(() => {
-    const handleResize = () => setIsMobile(window.innerWidth < 850);
+    const handleResize = () => setIsMobile(window.innerWidth < 900);
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, []);
@@ -52,7 +50,7 @@ export default function App() {
     setMealPlan(plan || []);
   }
 
-  const getWeekDates = () => {
+  const weekDates = useMemo(() => {
     const now = new Date();
     const day = now.getDay();
     const diff = now.getDate() - day + (day === 0 ? -6 : 1) + (weekOffset * 7);
@@ -60,8 +58,39 @@ export default function App() {
       const d = new Date(new Date().setDate(diff + i));
       return { name, fullDate: d.toISOString().split('T')[0], displayDate: d.toLocaleDateString('pl-PL', { day: '2-digit', month: '2-digit' }) };
     });
-  };
+  }, [weekOffset]);
 
+  // --- LOGIKA ANALITYKI (SUMOWANIE ZAKUPÓW) ---
+  const weeklyStats = useMemo(() => {
+    const shoppingList = {};
+    const dailyCosts = {};
+    let grandTotal = 0;
+
+    weekDates.forEach(dateObj => {
+      const dayMeals = mealPlan.filter(m => m.date === dateObj.fullDate);
+      let dayCost = 0;
+
+      dayMeals.forEach(meal => {
+        const fullRecipe = recipes.find(r => r.id === meal.recipe_id);
+        if (fullRecipe) {
+          dayCost += parseFloat(fullRecipe.total_cost);
+          fullRecipe.recipe_ingredients?.forEach(ri => {
+            const p = ri.products;
+            if (!shoppingList[p.id]) {
+              shoppingList[p.id] = { name: p.name, amount: 0, unit: p.unit, cost: 0, pricePerUnit: p.price_per_unit };
+            }
+            shoppingList[p.id].amount += parseFloat(ri.amount);
+          });
+        }
+      });
+      dailyCosts[dateObj.fullDate] = dayCost.toFixed(2);
+      grandTotal += dayCost;
+    });
+
+    return { shoppingList: Object.values(shoppingList), dailyCosts, grandTotal: grandTotal.toFixed(2) };
+  }, [weekDates, mealPlan, recipes]);
+
+  // --- HANDLERS ---
   const handleSaveProduct = async () => {
     const pricePerBaseUnit = parseFloat(newProd.price) / parseFloat(newProd.amount);
     const prodData = { name: newProd.name, price_per_unit: pricePerBaseUnit, unit: newProd.unit, last_input_quantity: parseFloat(newProd.amount) };
@@ -96,74 +125,161 @@ export default function App() {
     fetchData();
   };
 
-  if (loading) return <div style={loadingStyle}>Ładowanie...</div>;
+  if (loading) return <div style={loadingStyle}>Ładowanie danych...</div>;
   if (!session) return <LoginView />;
 
   return (
     <div style={appContainer}>
       {/* HEADER */}
       <header style={isMobile ? headerMobile : headerStyle}>
-        <div style={{textAlign: isMobile ? 'center' : 'left'}}>
-          <h1 style={{margin: 0, fontSize: isMobile ? '20px' : '28px'}}>🍴 Smart Planer</h1>
-          <p style={{margin: '5px 0', fontSize: '14px', color: '#64748b'}}>{getWeekDates()[0].displayDate} - {getWeekDates()[6].displayDate}</p>
+        <div>
+          <h1 style={{margin: 0, color: '#10b981'}}>🍴 Smart Planer</h1>
+          <p style={{color: '#94a3b8'}}>{weekDates[0].displayDate} - {weekDates[6].displayDate}</p>
         </div>
-        <div style={isMobile ? navButtonsMobile : navButtons}>
-          <div style={{display: 'flex', gap: '5px', width: '100%', justifyContent: 'center'}}>
-            <button onClick={() => setWeekOffset(prev => prev - 1)} style={btnSmall}>⬅</button>
-            <button onClick={() => setWeekOffset(0)} style={btnSmall}>Dziś</button>
-            <button onClick={() => setWeekOffset(prev => prev + 1)} style={btnSmall}>➡</button>
-          </div>
-          <div style={{display: 'flex', gap: '5px', width: '100%', justifyContent: 'center'}}>
-            <button onClick={() => setActiveModal('product')} style={btnSecSmall}>📦 Spiżarnia</button>
-            <button onClick={() => setActiveModal('recipe')} style={btnPrimSmall}>👨‍🍳 Przepisy</button>
-            <button onClick={handleLogout} style={btnDangerSmall}>Wyloguj</button>
-          </div>
+        <div style={navButtons}>
+          <button onClick={() => setWeekOffset(prev => prev - 1)} style={btnDark}>⬅</button>
+          <button onClick={() => setWeekOffset(0)} style={btnDark}>Dziś</button>
+          <button onClick={() => setWeekOffset(prev => prev + 1)} style={btnDark}>➡</button>
+          <button onClick={() => setActiveModal('product')} style={btnSec}>📦 Produkty</button>
+          <button onClick={() => setActiveModal('recipe')} style={btnPrim}>👨‍🍳 Przepisy</button>
+          <button onClick={handleLogout} style={btnDanger}>Wyloguj</button>
         </div>
       </header>
 
-      {/* KALENDARZ RESPONSIVE */}
-      <div style={isMobile ? mobileStack : gridStyle}>
-        {!isMobile && <div />}
-        {!isMobile && MEAL_TYPES.map(m => <div key={m} style={mealHeader}>{m}</div>)}
-        
-        {getWeekDates().map(day => (
-          <React.Fragment key={day.fullDate}>
-            <div style={isMobile ? mobileDayLabel : dayCell}>
-              <b>{day.name}</b><br/>
-              <small>{day.displayDate}</small>
+      {/* GŁÓWNY UKŁAD: KALENDARZ + KOSZTY DZIENNE */}
+      <div style={layoutGrid}>
+        <div style={isMobile ? mobileStack : gridStyle}>
+          {!isMobile && <div />}
+          {!isMobile && MEAL_TYPES.map(m => <div key={m} style={mealHeader}>{m}</div>)}
+          
+          {weekDates.map(day => (
+            <React.Fragment key={day.fullDate}>
+              <div style={isMobile ? mobileDayLabel : dayCell}>
+                <b>{day.name}</b><br/><small>{day.displayDate}</small>
+                {isMobile && <div style={{fontSize: '12px', color: '#10b981'}}>{weeklyStats.dailyCosts[day.fullDate]} zł</div>}
+              </div>
+              {MEAL_TYPES.map(type => {
+                const meal = mealPlan.find(p => p.date === day.fullDate && p.meal_type === type);
+                return (
+                  <div key={`${day.fullDate}-${type}`} style={meal ? cellStyleActive : cellStyle} onClick={() => { 
+                    if(!meal) { setSelectedCell({ date: day.fullDate, type }); setFilterCategory(type); setActiveModal('cell'); }
+                  }}>
+                    {isMobile && <span style={mobileMealTag}>{type}</span>}
+                    {meal ? (
+                      <div style={mealContent}>
+                        <div style={mealNameS}>{meal.recipes.name}</div>
+                        <div style={mealPriceS}>{meal.recipes.total_cost} zł</div>
+                        <button style={btnViewS} onClick={(e) => { e.stopPropagation(); setViewingRecipe(meal.recipes); setActiveModal('view-recipe'); }}>Pokaż</button>
+                        <button style={btnDeleteSmall} onClick={async (e) => { e.stopPropagation(); if(confirm("Usunąć?")) { await supabase.from('meal_plan').delete().eq('id', meal.id); fetchData(); } }}>✕</button>
+                      </div>
+                    ) : <span style={{opacity: 0.1, fontSize: '20px'}}>+</span>}
+                  </div>
+                );
+              })}
+            </React.Fragment>
+          ))}
+        </div>
+
+        {/* BOCZNY PANEL: KOSZTY DZIENNE (Tylko Desktop) */}
+        {!isMobile && (
+          <div style={sidePanel}>
+            <h3 style={{marginTop: 0, color: '#10b981'}}>💰 Koszty dzienne</h3>
+            {weekDates.map(day => (
+              <div key={day.fullDate} style={sideRow}>
+                <span>{day.name}</span>
+                <b style={{color: '#10b981'}}>{weeklyStats.dailyCosts[day.fullDate]} zł</b>
+              </div>
+            ))}
+            <div style={{...sideRow, border: 'none', marginTop: '10px', fontSize: '18px'}}>
+              <span>Razem:</span>
+              <b style={{color: '#10b981'}}>{weeklyStats.grandTotal} zł</b>
             </div>
-            {MEAL_TYPES.map(type => {
-              const meal = mealPlan.find(p => p.date === day.fullDate && p.meal_type === type);
-              return (
-                <div key={`${day.fullDate}-${type}`} style={meal ? cellStyleActive : cellStyle} onClick={() => { 
-                  if(!meal) { setSelectedCell({ date: day.fullDate, type }); setFilterCategory(type); setActiveModal('cell'); }
-                }}>
-                  {isMobile && <span style={mobileMealTag}>{type}:</span>}
-                  {meal ? (
-                    <div style={mealContent}>
-                      <div style={mealNameS}>{meal.recipes.name}</div>
-                      <div style={mealPriceS}>{meal.recipes.total_cost} zł</div>
-                      <button style={btnViewS} onClick={(e) => { e.stopPropagation(); setViewingRecipe(meal.recipes); setActiveModal('view-recipe'); }}>Pokaż</button>
-                      <button style={btnDeleteSmall} onClick={async (e) => { e.stopPropagation(); if(confirm("Usunąć z planu?")) { await supabase.from('meal_plan').delete().eq('id', meal.id); fetchData(); } }}>✕</button>
-                    </div>
-                  ) : <span style={{opacity: 0.2, fontSize: '20px'}}>+</span>}
-                </div>
-              );
-            })}
-          </React.Fragment>
-        ))}
+          </div>
+        )}
       </div>
 
-      {/* MODALE POZOSTAJĄ PODOBNE, ALE Z LEPSZYM DOPASOWANIEM SZEROKOŚCI */}
-      {activeModal === 'cell' && (
-        <Modal title={`Dodaj do: ${selectedCell?.type}`} onClose={() => setActiveModal(null)} isMobile={isMobile}>
-          <div style={filterBar}>
-            {["Wszystkie", ...MEAL_TYPES].map(cat => (
-              <button key={cat} onClick={() => setFilterCategory(cat === "Wszystkie" ? "" : cat)} 
-                style={filterCategory === (cat === "Wszystkie" ? "" : cat) ? btnFilterActive : btnFilter}>{cat}</button>
+      {/* DOLNY PANEL: LISTA ZAKUPÓW TYGODNIOWA */}
+      <div style={shoppingPanel}>
+        <h3 style={{color: '#10b981'}}>🛒 Potrzebne produkty (cały tydzień)</h3>
+        <div style={shoppingGrid}>
+          {weeklyStats.shoppingList.length > 0 ? weeklyStats.shoppingList.map(item => {
+            const displayAmount = (item.unit === 'kg' && item.amount < 1000) ? `${item.amount} g` :
+                                (item.unit === 'kg') ? `${(item.amount/1000).toFixed(2)} kg` :
+                                (item.unit === 'l' && item.amount < 1000) ? `${item.amount} ml` :
+                                (item.unit === 'l') ? `${(item.amount/1000).toFixed(2)} l` : `${item.amount} szt`;
+            
+            const itemCost = (item.unit === 'kg' || item.unit === 'l') ? (item.pricePerUnit * (item.amount/1000)) : (item.pricePerUnit * item.amount);
+
+            return (
+              <div key={item.name} style={shoppingItem}>
+                <div style={{fontWeight: 'bold'}}>{item.name}</div>
+                <div style={{color: '#94a3b8', fontSize: '13px'}}>{displayAmount} • {itemCost.toFixed(2)} zł</div>
+              </div>
+            );
+          }) : <p style={{color: '#64748b'}}>Dodaj posiłki do planu, aby zobaczyć listę zakupów.</p>}
+        </div>
+      </div>
+
+      {/* --- MODALE --- */}
+      {/* MODAL: PRZEPISY (NAPRAWIONY I ROZBUDOWANY) */}
+      {activeModal === 'recipe' && (
+        <Modal title="👨‍🍳 Zarządzanie Przepisami" onClose={() => setActiveModal(null)} isMobile={isMobile}>
+          <div style={{maxHeight: '75vh', overflowY: 'auto'}}>
+            <div style={formBoxS}>
+              <input style={inputS} placeholder="Nazwa dania..." value={newRecipe.name} onChange={e => setNewRecipe({...newRecipe, name: e.target.value})} />
+              <select style={inputS} value={newRecipe.category} onChange={e => setNewRecipe({...newRecipe, category: e.target.value})}>{MEAL_TYPES.map(t => <option key={t} value={t}>{t}</option>)}</select>
+              <textarea style={{...inputS, height:'60px'}} placeholder="Opis przygotowania..." value={newRecipe.instructions} onChange={e => setNewRecipe({...newRecipe, instructions: e.target.value})} />
+              <input style={inputS} placeholder="🔍 Szukaj składnika..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
+              {searchQuery && (
+                <div style={searchResultsS}>
+                  {products.filter(p => p.name.toLowerCase().includes(searchQuery.toLowerCase())).map(p => (
+                    <div key={p.id} style={searchItemS} onClick={() => { setNewRecipe({...newRecipe, ingredients: [...newRecipe.ingredients, {...p, amount: p.unit==='szt'?1:100}]}); setSearchQuery(''); }}>{p.name}</div>
+                  ))}
+                </div>
+              )}
+              {newRecipe.ingredients.map((ing, idx) => (
+                <div key={idx} style={ingRowS}>
+                  <small>{ing.name}</small>
+                  <input type="number" style={{width:'50px', background: '#1e293b', border: '1px solid #334155', color: 'white'}} value={ing.amount} onChange={e => {
+                    const copy = [...newRecipe.ingredients];
+                    copy[idx].amount = e.target.value;
+                    setNewRecipe({...newRecipe, ingredients: copy});
+                  }} />
+                  <button onClick={() => setNewRecipe({...newRecipe, ingredients: newRecipe.ingredients.filter((_, i) => i !== idx)})} style={{border:'none', background:'none', color:'#ef4444'}}>✕</button>
+                </div>
+              ))}
+              <div style={{textAlign:'right', fontWeight:'bold', margin:'10px 0'}}>Suma: {recipeTotal} zł</div>
+              <button style={btnSuccessFull} onClick={handleSaveRecipe}>Zapisz Przepis</button>
+            </div>
+
+            <h4 style={{color: '#10b981'}}>📋 Twoje Przepisy</h4>
+            <div style={filterBar}>
+              {MEAL_TYPES.map(cat => (
+                <button key={cat} onClick={() => setRecipeListCategory(cat)} style={recipeListCategory === cat ? btnFilterActive : btnFilter}>{cat}</button>
+              ))}
+            </div>
+            {recipes.filter(r => r.category === recipeListCategory).map(r => (
+              <div key={r.id} style={productRowS}>
+                <span>{r.name} ({r.total_cost} zł)</span>
+                <div style={{display:'flex', gap:'10px'}}>
+                  <button onClick={() => {
+                    setNewRecipe({ id: r.id, name: r.name, category: r.category, instructions: r.instructions, ingredients: r.recipe_ingredients.map(ri => ({ ...ri.products, amount: ri.amount, product_id: ri.product_id })) });
+                  }} style={iconBtn}>✏️</button>
+                  <button onClick={async () => { if(confirm("Usunąć?")) { await supabase.from('recipes').delete().eq('id', r.id); fetchData(); } }} style={iconBtn}>🗑️</button>
+                </div>
+              </div>
             ))}
           </div>
-          <div style={{maxHeight: '350px', overflowY: 'auto'}}>
+        </Modal>
+      )}
+
+      {/* POZOSTAŁE MODALE (Logika bez zmian, tylko style ciemne) */}
+      {activeModal === 'cell' && (
+        <Modal title="Wybierz posiłek" onClose={() => setActiveModal(null)} isMobile={isMobile}>
+          <div style={filterBar}>{["Wszystkie", ...MEAL_TYPES].map(cat => (
+            <button key={cat} onClick={() => setFilterCategory(cat === "Wszystkie" ? "" : cat)} style={filterCategory === (cat === "Wszystkie" ? "" : cat) ? btnFilterActive : btnFilter}>{cat}</button>
+          ))}</div>
+          <div style={{maxHeight: '300px', overflowY: 'auto'}}>
             {recipes.filter(r => !filterCategory || r.category === filterCategory).map(r => (
               <div key={r.id} style={recipeListItem} onClick={async () => {
                 await supabase.from('meal_plan').insert([{ date: selectedCell.date, meal_type: selectedCell.type, recipe_id: r.id }]);
@@ -176,15 +292,6 @@ export default function App() {
         </Modal>
       )}
 
-      {activeModal === 'view-recipe' && viewingRecipe && (
-        <Modal title={`📖 ${viewingRecipe.name}`} onClose={() => setActiveModal(null)} isMobile={isMobile}>
-          <div style={{maxHeight: '70vh', overflowY: 'auto'}}>
-            <p style={{whiteSpace: 'pre-wrap', background: '#f8fafc', padding: '15px', borderRadius: '10px', fontSize: '14px'}}>{viewingRecipe.instructions || "Brak opisu."}</p>
-          </div>
-        </Modal>
-      )}
-
-      {/* MODAL: SPIŻARNIA */}
       {activeModal === 'product' && (
         <Modal title="📦 Spiżarnia" onClose={() => setActiveModal(null)} isMobile={isMobile}>
            <div style={formBoxS}>
@@ -199,7 +306,7 @@ export default function App() {
            <div style={{maxHeight: '300px', overflowY: 'auto'}}>
               {products.map(p => (
                 <div key={p.id} style={productRowS}>
-                  <span style={{fontSize: '14px'}}>{p.name} ({p.price_per_unit.toFixed(2)}zł)</span>
+                  <span>{p.name} ({p.price_per_unit.toFixed(2)}zł/{p.unit})</span>
                   <div style={{display:'flex', gap:'10px'}}>
                     <button onClick={() => setNewProd({id:p.id, name:p.name, price:(p.price_per_unit*(p.last_input_quantity||1)).toFixed(2), amount:p.last_input_quantity||1, unit:p.unit})} style={iconBtn}>✏️</button>
                     <button onClick={async () => { if(confirm("Usunąć?")) { await supabase.from('products').delete().eq('id', p.id); fetchData(); } }} style={iconBtn}>🗑️</button>
@@ -209,53 +316,11 @@ export default function App() {
            </div>
         </Modal>
       )}
-
-      {/* MODAL: PRZEPISY */}
-      {activeModal === 'recipe' && (
-        <Modal title="👨‍🍳 Zarządzanie Przepisami" onClose={() => setActiveModal(null)} isMobile={isMobile}>
-          <div style={{maxHeight: '75vh', overflowY: 'auto'}}>
-            <div style={formBoxS}>
-              <input style={inputS} placeholder="Nazwa dania..." value={newRecipe.name} onChange={e => setNewRecipe({...newRecipe, name: e.target.value})} />
-              <select style={inputS} value={newRecipe.category} onChange={e => setNewRecipe({...newRecipe, category: e.target.value})}>{MEAL_TYPES.map(t => <option key={t} value={t}>{t}</option>)}</select>
-              <textarea style={{...inputS, height:'60px'}} placeholder="Opis przygotowania..." value={newRecipe.instructions} onChange={e => setNewRecipe({...newRecipe, instructions: e.target.value})} />
-              <input style={inputS} placeholder="🔍 Dodaj składnik..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
-              {searchQuery && (
-                <div style={searchResultsS}>
-                  {products.filter(p => p.name.toLowerCase().includes(searchQuery.toLowerCase())).map(p => (
-                    <div key={p.id} style={searchItemS} onClick={() => { setNewRecipe({...newRecipe, ingredients: [...newRecipe.ingredients, {...p, amount: p.unit==='szt'?1:100}]}); setSearchQuery(''); }}>{p.name}</div>
-                  ))}
-                </div>
-              )}
-              {newRecipe.ingredients.map((ing, idx) => (
-                <div key={idx} style={ingRowS}>
-                  <small>{ing.name}</small>
-                  <input type="number" style={{width:'50px'}} value={ing.amount} onChange={e => {
-                    const copy = [...newRecipe.ingredients];
-                    copy[idx].amount = e.target.value;
-                    setNewRecipe({...newRecipe, ingredients: copy});
-                  }} />
-                  <button onClick={() => setNewRecipe({...newRecipe, ingredients: newRecipe.ingredients.filter((_, i) => i !== idx)})} style={{border:'none', background:'none', color:'red'}}>✕</button>
-                </div>
-              ))}
-              <div style={{textAlign:'right', fontWeight:'bold', margin:'10px 0'}}>Suma: {recipeTotal} zł</div>
-              <button style={btnSuccessFull} onClick={handleSaveRecipe}>Zapisz</button>
-            </div>
-            <div style={filterBar}>
-              {MEAL_TYPES.map(cat => (
-                <button key={cat} onClick={() => setRecipeListCategory(cat)} style={recipeListCategory === cat ? btnFilterActive : btnFilter}>{cat}</button>
-              ))}
-            </div>
-            {recipes.filter(r => r.category === recipeListCategory).map(r => (
-              <div key={r.id} style={productRowS}>
-                <span style={{fontSize:'13px'}}>{r.name}</span>
-                <div style={{display:'flex', gap:'10px'}}>
-                  <button onClick={() => {
-                    setNewRecipe({ id: r.id, name: r.name, category: r.category, instructions: r.instructions, ingredients: r.recipe_ingredients.map(ri => ({ ...ri.products, amount: ri.amount, product_id: ri.product_id })) });
-                  }} style={iconBtn}>✏️</button>
-                  <button onClick={async () => { if(confirm("Usunąć?")) { await supabase.from('recipes').delete().eq('id', r.id); fetchData(); } }} style={iconBtn}>🗑️</button>
-                </div>
-              </div>
-            ))}
+      
+      {activeModal === 'view-recipe' && viewingRecipe && (
+        <Modal title={`📖 ${viewingRecipe.name}`} onClose={() => setActiveModal(null)} isMobile={isMobile}>
+          <div style={{maxHeight: '70vh', overflowY: 'auto'}}>
+            <p style={{whiteSpace: 'pre-wrap', background: '#1e293b', padding: '15px', borderRadius: '10px', fontSize: '14px'}}>{viewingRecipe.instructions || "Brak opisu przygotowania."}</p>
           </div>
         </Modal>
       )}
@@ -263,57 +328,60 @@ export default function App() {
   );
 }
 
-// --- HELPERS ---
+// --- LOGIN VIEW ---
 function LoginView() {
   const [email, setEmail] = useState(''); const [password, setPassword] = useState('');
   const handleLogin = async (e) => { e.preventDefault(); const { error } = await supabase.auth.signInWithPassword({ email, password }); if (error) alert(error.message); };
   return (
-    <div style={loginOverlay}><form onSubmit={handleLogin} style={loginForm}><h2>🔐 Smart Planer</h2><input style={inputS} type="email" placeholder="Email" onChange={e => setEmail(e.target.value)} /><input style={inputS} type="password" placeholder="Hasło" onChange={e => setPassword(e.target.value)} /><button style={btnSuccessFull}>Zaloguj</button></form></div>
+    <div style={loginOverlay}><form onSubmit={handleLogin} style={loginForm}><h2 style={{color:'#10b981'}}>🔐 Meal planer</h2><input style={inputS} type="email" placeholder="Email" onChange={e => setEmail(e.target.value)} /><input style={inputS} type="password" placeholder="Hasło" onChange={e => setPassword(e.target.value)} /><button style={btnSuccessFull}>Zaloguj</button></form></div>
   );
 }
 
 function Modal({ title, children, onClose, isMobile }) {
-  const mS = { background: 'white', padding: isMobile ? '15px' : '25px', borderRadius: '20px', width: isMobile ? '90%' : '500px', maxWidth: '500px', boxShadow: '0 15px 30px rgba(0,0,0,0.2)' };
-  return (<div style={overlayS}><div style={mS}><div style={{display:'flex', justifyContent:'space-between', marginBottom:'15px'}}><h3 style={{margin:0, fontSize: isMobile ? '16px' : '20px'}}>{title}</h3><button onClick={onClose} style={{border:'none', background:'none', cursor:'pointer', fontSize:'24px'}}>✕</button></div>{children}</div></div>);
+  const mS = { background: '#0f172a', padding: isMobile ? '15px' : '25px', borderRadius: '20px', width: isMobile ? '90%' : '550px', boxShadow: '0 20px 40px rgba(0,0,0,0.4)', color: 'white', border: '1px solid #1e293b' };
+  return (<div style={overlayS}><div style={mS}><div style={{display:'flex', justifyContent:'space-between', marginBottom:'15px'}}><h3 style={{margin:0}}>{title}</h3><button onClick={onClose} style={{border:'none', background:'none', cursor:'pointer', fontSize:'24px', color:'white'}}>✕</button></div>{children}</div></div>);
 }
 
-// --- STYLE ---
-const appContainer = { padding: '10px', backgroundColor: '#f0f2f5', minHeight: '100vh', fontFamily: 'sans-serif' };
-const headerStyle = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', background: 'white', padding: '15px', borderRadius: '15px' };
-const headerMobile = { display: 'flex', flexDirection: 'column', gap: '15px', marginBottom: '20px', background: 'white', padding: '15px', borderRadius: '15px' };
-const navButtons = { display: 'flex', gap: '8px' };
-const navButtonsMobile = { display: 'flex', flexDirection: 'column', gap: '10px', width: '100%' };
+// --- STYLE (DARK MODE & GRID) ---
+const appContainer = { padding: '15px', backgroundColor: '#020617', minHeight: '100vh', color: '#f1f5f9', fontFamily: 'sans-serif' };
+const headerStyle = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', background: '#0f172a', padding: '20px', borderRadius: '15px', border: '1px solid #1e293b' };
+const headerMobile = { display: 'flex', flexDirection: 'column', gap: '15px', marginBottom: '20px', background: '#0f172a', padding: '20px', borderRadius: '15px', textAlign: 'center' };
+const navButtons = { display: 'flex', gap: '10px', flexWrap: 'wrap', justifyContent: 'center' };
+const layoutGrid = { display: 'grid', gridTemplateColumns: '1fr 300px', gap: '20px' };
+const sidePanel = { background: '#0f172a', padding: '20px', borderRadius: '15px', border: '1px solid #1e293b', height: 'fit-content' };
+const sideRow = { display: 'flex', justifyContent: 'space-between', padding: '12px 0', borderBottom: '1px solid #1e293b' };
 const gridStyle = { display: 'grid', gridTemplateColumns: '120px repeat(5, 1fr)', gap: '10px' };
 const mobileStack = { display: 'flex', flexDirection: 'column', gap: '15px' };
-const dayCell = { background: 'white', padding: '12px', borderRadius: '12px', textAlign: 'center', borderLeft: '5px solid #38a169' };
-const mobileDayLabel = { background: '#38a169', color: 'white', padding: '10px', borderRadius: '10px', textAlign: 'center', fontWeight: 'bold' };
-const mealHeader = { textAlign: 'center', fontWeight: 'bold', color: '#4a5568' };
-const cellStyle = { minHeight: '80px', background: 'white', borderRadius: '12px', border: '1px solid #e2e8f0', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', position: 'relative', padding: '5px' };
-const cellStyleActive = { ...cellStyle, border: '2px solid #38a169' };
-const mobileMealTag = { position: 'absolute', top: '5px', left: '8px', fontSize: '10px', color: '#94a3b8', fontWeight: 'bold' };
-const mealContent = { width: '100%', textAlign: 'center', padding: '10px 5px 5px 5px' };
-const mealNameS = { fontWeight: 'bold', fontSize: '12px', color: '#2d3748' };
-const mealPriceS = { fontSize: '11px', color: '#38a169', fontWeight: 'bold' };
-const btnViewS = { background: '#edf2f7', border: 'none', padding: '4px 8px', borderRadius: '5px', fontSize: '10px', cursor: 'pointer', marginTop: '5px' };
-const btnDeleteSmall = { position: 'absolute', top: '2px', right: '2px', background: '#feb2b2', border: 'none', borderRadius: '50%', width: '18px', height: '18px', cursor: 'pointer', fontSize: '9px' };
-const filterBar = { display: 'flex', gap: '5px', marginBottom: '15px', overflowX: 'auto', WebkitOverflowScrolling: 'touch' };
-const btnFilter = { background: '#edf2f7', border: 'none', padding: '8px 15px', borderRadius: '20px', fontSize: '12px', cursor: 'pointer', whiteSpace: 'nowrap' };
-const btnFilterActive = { ...btnFilter, background: '#3182ce', color: 'white' };
-const inputS = { width: '100%', padding: '12px', marginBottom: '10px', borderRadius: '10px', border: '1px solid #ddd', boxSizing: 'border-box', fontSize: '14px' };
-const btnSmall = { background: '#edf2f7', border: 'none', padding: '10px', borderRadius: '8px', cursor: 'pointer', flex: 1 };
-const btnPrimSmall = { background: '#3182ce', color: 'white', border: 'none', padding: '10px', borderRadius: '8px', cursor: 'pointer', flex: 1, fontSize: '12px', fontWeight: 'bold' };
-const btnSecSmall = { background: '#edf2f7', color: '#2d3748', border: 'none', padding: '10px', borderRadius: '8px', cursor: 'pointer', flex: 1, fontSize: '12px' };
-const btnDangerSmall = { background: '#e53e3e', color: 'white', border: 'none', padding: '10px', borderRadius: '8px', cursor: 'pointer', flex: 1, fontSize: '12px' };
-const btnSuccessFull = { background: '#38a169', color: 'white', border: 'none', padding: '14px', borderRadius: '10px', width: '100%', cursor: 'pointer', fontWeight: 'bold', fontSize: '16px' };
-const overlayS = { position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', background: 'rgba(0,0,0,0.5)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000 };
-const modalS = { background: 'white', padding: '25px', borderRadius: '20px', width: '500px', boxShadow: '0 15px 30px rgba(0,0,0,0.2)' };
-const formBoxS = { background: '#f8fafc', padding: '15px', borderRadius: '12px', marginBottom: '15px', border: '1px solid #e2e8f0' };
-const productRowS = { display: 'flex', justifyContent: 'space-between', padding: '10px', borderBottom: '1px solid #eee', alignItems: 'center' };
+const dayCell = { background: '#0f172a', padding: '12px', borderRadius: '12px', textAlign: 'center', borderLeft: '5px solid #10b981' };
+const mobileDayLabel = { background: '#10b981', color: 'white', padding: '12px', borderRadius: '12px', textAlign: 'center', fontWeight: 'bold', display: 'flex', justifyContent: 'space-between' };
+const mealHeader = { textAlign: 'center', fontWeight: 'bold', color: '#94a3b8', padding: '10px' };
+const cellStyle = { minHeight: '100px', background: '#0f172a', borderRadius: '12px', border: '1px solid #1e293b', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', position: 'relative' };
+const cellStyleActive = { ...cellStyle, border: '2px solid #10b981' };
+const mealContent = { width: '100%', textAlign: 'center', padding: '10px' };
+const mealNameS = { fontWeight: 'bold', fontSize: '13px', color: '#f1f5f9' };
+const mealPriceS = { fontSize: '12px', color: '#10b981', fontWeight: 'bold' };
+const btnViewS = { background: '#1e293b', color: '#f1f5f9', border: 'none', padding: '5px 10px', borderRadius: '6px', fontSize: '10px', cursor: 'pointer', marginTop: '8px' };
+const btnDeleteSmall = { position: 'absolute', top: '5px', right: '5px', background: '#450a0a', border: 'none', color: '#f87171', borderRadius: '50%', width: '22px', height: '22px', cursor: 'pointer' };
+const mobileMealTag = { position: 'absolute', top: '5px', left: '8px', fontSize: '9px', color: '#475569', fontWeight: 'bold', textTransform: 'uppercase' };
+const shoppingPanel = { marginTop: '30px', background: '#0f172a', padding: '25px', borderRadius: '15px', border: '1px solid #1e293b' };
+const shoppingGrid = { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '15px' };
+const shoppingItem = { background: '#1e293b', padding: '15px', borderRadius: '10px', border: '1px solid #334155' };
+const inputS = { width: '100%', padding: '12px', marginBottom: '10px', borderRadius: '10px', background: '#1e293b', border: '1px solid #334155', color: 'white' };
+const btnPrim = { background: '#10b981', color: 'white', border: 'none', padding: '10px 20px', borderRadius: '10px', cursor: 'pointer', fontWeight: 'bold' };
+const btnSec = { background: '#1e293b', color: 'white', border: 'none', padding: '10px 20px', borderRadius: '10px', cursor: 'pointer' };
+const btnDark = { background: '#1e293b', color: 'white', border: 'none', padding: '10px 15px', borderRadius: '10px' };
+const btnDanger = { background: '#7f1d1d', color: 'white', border: 'none', padding: '10px 20px', borderRadius: '10px' };
+const btnSuccessFull = { background: '#10b981', color: 'white', border: 'none', padding: '15px', borderRadius: '12px', width: '100%', cursor: 'pointer', fontWeight: 'bold' };
+const btnFilter = { background: '#1e293b', color: '#94a3b8', border: 'none', padding: '8px 16px', borderRadius: '20px', cursor: 'pointer', marginRight: '5px' };
+const btnFilterActive = { ...btnFilter, background: '#10b981', color: 'white' };
+const filterBar = { display: 'flex', gap: '5px', marginBottom: '15px', overflowX: 'auto' };
+const productRowS = { display: 'flex', justifyContent: 'space-between', padding: '12px', background: '#1e293b', borderRadius: '10px', marginBottom: '8px' };
+const recipeListItem = { padding: '15px', borderBottom: '1px solid #1e293b', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', fontSize: '14px' };
+const searchResultsS = { background: '#1e293b', border: '1px solid #334155', borderRadius: '10px', marginTop: '-5px', marginBottom: '15px' };
+const searchItemS = { padding: '12px', cursor: 'pointer', borderBottom: '1px solid #334155' };
+const ingRowS = { display: 'flex', justifyContent: 'space-between', padding: '8px 0', alignItems: 'center' };
 const iconBtn = { border: 'none', background: 'none', cursor: 'pointer', fontSize: '18px' };
-const searchResultsS = { background: 'white', border: '1px solid #ddd', borderRadius: '8px', marginTop: '-5px', marginBottom: '10px' };
-const searchItemS = { padding: '10px', cursor: 'pointer', borderBottom: '1px solid #eee' };
-const ingRowS = { display: 'flex', justifyContent: 'space-between', padding: '5px 0', alignItems: 'center' };
-const recipeListItem = { padding: '12px', borderBottom: '1px solid #f0f0f0', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', fontSize: '13px' };
-const loginOverlay = { height: '100vh', display: 'flex', justifyContent: 'center', alignItems: 'center', background: '#f1f5f9' };
-const loginForm = { background: 'white', padding: '30px', borderRadius: '25px', width: '300px' };
-const loadingStyle = { display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh' };
+const overlayS = { position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', background: 'rgba(0,0,0,0.8)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000 };
+const loginOverlay = { height: '100vh', display: 'flex', justifyContent: 'center', alignItems: 'center', background: '#020617' };
+const loginForm = { background: '#0f172a', padding: '40px', borderRadius: '25px', width: '320px', border: '1px solid #1e293b' };
+const loadingStyle = { display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', color: '#10b981' };
