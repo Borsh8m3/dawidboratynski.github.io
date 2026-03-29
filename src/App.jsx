@@ -63,9 +63,17 @@ export default function App() {
       const file = e.target.files[0];
       const fileExt = file.name.split('.').pop();
       const fileName = `${Math.random()}.${fileExt}`;
-      const { error: uploadError } = await supabase.storage.from('recipe-images').upload(fileName, file);
+
+      const { error: uploadError } = await supabase.storage
+        .from('recipe-images')
+        .upload(fileName, file);
+
       if (uploadError) throw uploadError;
-      const { data: { publicUrl } } = supabase.storage.from('recipe-images').getPublicUrl(fileName);
+
+      const { data: { publicUrl } } = supabase.storage
+        .from('recipe-images')
+        .getPublicUrl(fileName);
+
       setNewRecipe({ ...newRecipe, image_url: publicUrl });
     } catch (error) {
       alert('Błąd przesyłania zdjęcia! Upewnij się, że masz publiczny bucket "recipe-images".');
@@ -136,7 +144,7 @@ export default function App() {
       totalWeekly += dCost;
     });
     manualShoppingList.forEach(item => {
-      if (!shopping[item.id]) shopping[item.id] = { id: item.id, name: item.name, amount: 0, unit: item.unit, pricePerUnit: item.price_per_unit };
+      if (!shopping[item.id]) shopping[item.id] = { id: item.id, name: item.name, amount: 0, unit: item.unit, pricePerUnit: item.pricePerUnit };
       shopping[item.id].amount += parseFloat(item.amount || 0);
       totalWeekly += (item.pricePerUnit * item.amount);
     });
@@ -161,8 +169,7 @@ export default function App() {
   };
 
   const handleSaveRecipe = async () => {
-    const calc = (ing) => (parseFloat(ing.price_per_unit || ing.products?.price_per_unit || 0) * parseFloat(ing.amount || 0));
-    const tCost = newRecipe.ingredients.reduce((s, i) => s + calc(i), 0).toFixed(2);
+    const tCost = newRecipe.ingredients.reduce((s, i) => s + (parseFloat(i.price_per_unit || i.products?.price_per_unit || 0) * parseFloat(i.amount || 0)), 0).toFixed(2);
     const rData = { name: newRecipe.name, category: newRecipe.category, total_cost: tCost, instructions: newRecipe.instructions, steps: newRecipe.steps, image_url: newRecipe.image_url };
     let rId = newRecipe.id;
     if (newRecipe.id) {
@@ -172,8 +179,7 @@ export default function App() {
       const { data } = await supabase.from('recipes').insert([rData]).select().single();
       rId = data.id;
     }
-    const ings = newRecipe.ingredients.map(ing => ({ recipe_id: rId, product_id: ing.id || ing.product_id, amount: ing.amount }));
-    await supabase.from('recipe_ingredients').insert(ings);
+    await supabase.from('recipe_ingredients').insert(newRecipe.ingredients.map(ing => ({ recipe_id: rId, product_id: ing.id || ing.product_id, amount: ing.amount })));
     setNewRecipe({ id: null, name: '', category: 'Obiad', instructions: '', steps: [], ingredients: [], image_url: '' });
     setActiveModal(null);
     fetchData();
@@ -187,7 +193,7 @@ export default function App() {
 
   const addToManualList = (item, type = 'product') => {
     if (type === 'product') {
-      setManualShoppingList([...manualShoppingList, { ...item, amount: item.last_input_quantity || 1, pricePerUnit: item.price_per_unit }]);
+      setManualShoppingList([...manualShoppingList, { ...item, id: item.id, amount: item.last_input_quantity || 100, pricePerUnit: item.price_per_unit }]);
     } else {
       const newItems = item.recipe_ingredients.map(ri => ({ ...ri.products, id: ri.product_id, amount: ri.amount, pricePerUnit: ri.products.price_per_unit }));
       setManualShoppingList([...manualShoppingList, ...newItems]);
@@ -195,15 +201,13 @@ export default function App() {
     setActiveModal(null);
   };
 
-  const filteredProducts = products.filter(p => p.name.toLowerCase().includes(searchQuery.toLowerCase()));
-
   if (loading) return <div style={loadingStyle}>🍳 Rozgrzewanie kuchni...</div>;
   if (!session) return <LoginView />;
 
   return (
     <div style={appContainer}>
       <header style={isMobile ? headerMobile : headerStyle}>
-        <div><h1 style={{margin:0, color:'#059669'}}>🥗 Jedzonko Planer</h1><small style={{color:'#64748b'}}>{weekDates[0].displayDate} - {weekDates[6].displayDate}</small></div>
+        <div><h1 style={{margin:0, color:'#059669'}}>🥗 Jedzonko P</h1><small style={{color:'#64748b'}}>{weekDates[0].displayDate} - {weekDates[6].displayDate}</small></div>
         <div style={navButtons}>
           <button onClick={() => setWeekOffset(prev => prev - 1)} style={btnSec}>⬅</button>
           <button onClick={() => setWeekOffset(0)} style={weekOffset === 0 ? btnTodayActive : btnSec}>Dziś</button>
@@ -223,7 +227,6 @@ export default function App() {
             <React.Fragment key={day.fullDate}>
               <div style={isMobile ? mobileDayLabel : dayCell}>
                 <b>{day.name}</b><br/><small>{day.displayDate}</small>
-                {isMobile && <div style={{color:'#059669'}}>{stats.daily[day.fullDate]} zł</div>}
               </div>
               {MEAL_TYPES.map(type => {
                 const m = mealPlan.find(p => p.date === day.fullDate && p.meal_type === type);
@@ -235,7 +238,7 @@ export default function App() {
                     {isMobile && <span style={{...mobileMealTag, color: m?.recipes?.image_url ? '#fff' : '#94a3b8'}}>{type}</span>}
                     {m ? (
                       <div style={mealContent}>
-                        <div style={mealNameS}>{m.recipes.name}</div>
+                        <div style={{fontWeight:'bold', fontSize:'13px'}}>{m.recipes.name}</div>
                         <button style={btnViewS} onClick={(e)=>{e.stopPropagation(); setViewingRecipe(m.recipes); setViewMode('desc'); setActiveModal('view-recipe');}}>Pokaż</button>
                         <button style={btnDeleteSmall} onClick={async(e)=>{e.stopPropagation(); if(confirm("Usunąć?")){await supabase.from('meal_plan').delete().eq('id', m.id); fetchData();}}}>✕</button>
                       </div>
@@ -248,9 +251,8 @@ export default function App() {
         </div>
         {!isMobile && (
           <div style={sidePanel}>
-            <h3 style={{marginTop:0, color:'#059669'}}>💰 Koszty</h3>
-            {weekDates.map(d => <div key={d.fullDate} style={sideRow}><span>{d.name}</span><b>{stats.daily[d.fullDate]} zł</b></div>)}
-            <div style={{...sideRow, border:'none', marginTop:'15px', fontSize:'18px'}}><span>Suma tyg.:</span><b style={{color:'#059669'}}>{stats.totalWeekly} zł</b></div>
+            <h3 style={{marginTop:0, color:'#059669'}}>💰 Koszty tydzień</h3>
+            <b style={{fontSize:'24px'}}>{stats.totalWeekly} zł</b>
           </div>
         )}
       </div>
@@ -260,7 +262,7 @@ export default function App() {
           <h3 style={{color:'#059669', margin:0}}>🛒 Lista zakupów</h3>
           <div style={{display:'flex', gap:'5px'}}>
             <button style={btnPrimSmall} onClick={() => setActiveModal('shopping-add')}>+ Dodaj</button>
-            <button style={{...btnSec, padding:'5px 15px', fontSize:'12px'}} onClick={() => {setCheckedItems({}); setManualShoppingList([])}}>Reset listy</button>
+            <button style={{...btnSec, padding:'5px 15px', fontSize:'12px'}} onClick={() => {setCheckedItems({}); setManualShoppingList([])}}>Reset</button>
           </div>
         </div>
         <div style={shoppingGrid}>
@@ -290,62 +292,45 @@ export default function App() {
               <h4>⭐ Najczęstsze dania</h4>
               {advancedStats.topRecipes.map(([name, count]) => <div key={name} style={sideRow}><span>{name}</span><b>{count}x</b></div>)}
             </div>
-            <div style={statSection}>
-              <h4>💸 Najdroższe składniki</h4>
-              {advancedStats.topIngredients.map(([name, data]) => <div key={name} style={sideRow}><span>{name}</span><b style={{color:'#ef4444'}}>{data.cost.toFixed(2)} zł</b></div>)}
-            </div>
           </div>
         </Modal>
       )}
 
       {/* MODAL: PRZEPISY */}
       {activeModal === 'recipe' && (
-        <Modal title="👨‍🍳 Przepisy" onClose={() => setActiveModal(null)} isMobile={isMobile}>
+        <Modal title="👨‍🍳 Zarządzanie Przepisami" onClose={() => setActiveModal(null)} isMobile={isMobile}>
           <div style={{maxHeight:'75vh', overflowY:'auto'}}>
             <div style={formBoxS}>
               <input style={inputS} placeholder="Nazwa dania" value={newRecipe.name} onChange={e => setNewRecipe({...newRecipe, name: e.target.value})} />
               <div style={{marginBottom:'10px'}}>
                 <label style={uploadLabelS}>
-                  {uploading ? '⌛ Wysyłanie...' : '📷 Dodaj zdjęcie (Aparat/Galeria)'}
+                  {uploading ? '⌛ Wysyłanie...' : '📷 Dodaj zdjęcie'}
                   <input type="file" accept="image/*" capture="environment" onChange={handleUploadImage} style={{display:'none'}} disabled={uploading} />
                 </label>
                 {newRecipe.image_url && <img src={newRecipe.image_url} style={{width:'100%', height:'120px', objectFit:'cover', borderRadius:'10px', marginTop:'10px'}} />}
               </div>
               <select style={inputS} value={newRecipe.category} onChange={e => setNewRecipe({...newRecipe, category: e.target.value})}>{MEAL_TYPES.map(t => <option key={t} value={t}>{t}</option>)}</select>
               <textarea style={{...inputS, height:'60px'}} placeholder="Opis..." value={newRecipe.instructions} onChange={e => setNewRecipe({...newRecipe, instructions: e.target.value})} />
-              <div>
-                <label style={{fontWeight:'bold', fontSize:'14px'}}>Kroki:</label>
-                {newRecipe.steps.map((step, idx) => (
-                  <div key={idx} style={{display:'flex', gap:'5px', marginTop:'5px'}}>
-                    <input style={inputS} value={step} onChange={e => { const s = [...newRecipe.steps]; s[idx] = e.target.value; setNewRecipe({...newRecipe, steps: s}); }} />
-                    <button onClick={() => setNewRecipe({...newRecipe, steps: newRecipe.steps.filter((_, i) => i !== idx)})} style={{color:'red', border:'none', background:'none'}}>✕</button>
-                  </div>
-                ))}
-                <button style={{...btnSec, width:'100%', padding:'5px', marginTop:'5px'}} onClick={() => setNewRecipe({...newRecipe, steps: [...newRecipe.steps, '']})}>+ Dodaj krok</button>
-              </div>
+              <button style={{...btnSec, width:'100%', padding:'5px', marginTop:'5px'}} onClick={() => setNewRecipe({...newRecipe, steps: [...newRecipe.steps, '']})}>+ Dodaj krok</button>
+              {newRecipe.steps.map((step, idx) => (
+                <div key={idx} style={{display:'flex', gap:'5px', marginTop:'5px'}}>
+                  <input style={inputS} value={step} onChange={e => { const s = [...newRecipe.steps]; s[idx] = e.target.value; setNewRecipe({...newRecipe, steps: s}); }} />
+                  <button onClick={() => setNewRecipe({...newRecipe, steps: newRecipe.steps.filter((_, i) => i !== idx)})} style={{color:'red', border:'none', background:'none'}}>✕</button>
+                </div>
+              ))}
               <div style={{position:'relative', marginTop:'10px'}}>
                 <input style={inputS} placeholder="🔍 Składnik..." value={searchQuery} onFocus={() => setShowDropdown(true)} onBlur={() => setTimeout(() => setShowDropdown(false), 200)} onChange={e => setSearchQuery(e.target.value)} />
-                {showDropdown && filteredProducts.length > 0 && (
-                  <div style={searchResultsS}>{filteredProducts.map(p => <div key={p.id} style={searchItemS} onClick={() => { setNewRecipe({...newRecipe, ingredients: [...newRecipe.ingredients, {...p, amount: 100}]}); setSearchQuery(''); }}>{p.name} ({p.unit})</div>)}</div>
+                {showDropdown && products.filter(p => p.name.toLowerCase().includes(searchQuery.toLowerCase())).length > 0 && (
+                  <div style={searchResultsS}>{products.filter(p => p.name.toLowerCase().includes(searchQuery.toLowerCase())).map(p => <div key={p.id} style={searchItemS} onClick={() => { setNewRecipe({...newRecipe, ingredients: [...newRecipe.ingredients, {...p, amount: 100}]}); setSearchQuery(''); }}>{p.name} ({p.unit})</div>)}</div>
                 )}
               </div>
               {newRecipe.ingredients.map((ing, idx) => (
-                <div key={idx} style={ingRowS}>
-                  <small>{ing.name}</small>
-                  <div style={{display:'flex', alignItems:'center', gap:'5px'}}>
-                    <input type="number" style={{width:'60px'}} value={ing.amount} onChange={e => {const c = [...newRecipe.ingredients]; c[idx].amount = e.target.value; setNewRecipe({...newRecipe, ingredients: c});}} /> <span>{ing.unit}</span>
-                    <button onClick={() => setNewRecipe({...newRecipe, ingredients: newRecipe.ingredients.filter((_, i) => i !== idx)})} style={{color:'red', border:'none', background:'none'}}>✕</button>
-                  </div>
-                </div>
+                <div key={idx} style={ingRowS}><small>{ing.name}</small><div><input type="number" style={{width:'60px'}} value={ing.amount} onChange={e => {const c = [...newRecipe.ingredients]; c[idx].amount = e.target.value; setNewRecipe({...newRecipe, ingredients: c});}} /> {ing.unit} <button onClick={() => setNewRecipe({...newRecipe, ingredients: newRecipe.ingredients.filter((_, i) => i !== idx)})} style={{color:'red', border:'none', background:'none'}}>✕</button></div></div>
               ))}
-              <button style={{...btnSuccessFull, marginTop:'10px'}} onClick={handleSaveRecipe}>Zapisz</button>
+              <button style={{...btnSuccessFull, marginTop:'10px'}} onClick={handleSaveRecipe}>{newRecipe.id ? 'Zaktualizuj' : 'Zapisz'}</button>
             </div>
-            <div style={filterBar}>{MEAL_TYPES.map(cat => <button key={cat} onClick={() => setRecipeListCategory(cat)} style={recipeListCategory === cat ? btnFilterActive : btnFilter}>{cat}</button>)}</div>
             {recipes.filter(r => r.category === recipeListCategory).map(r => (
-              <div key={r.id} style={productRowS}>
-                <span style={{cursor:'pointer', flex:1}} onClick={() => {setNewRecipe({id:r.id, name:r.name, category:r.category, instructions:r.instructions, steps: r.steps || [], ingredients: r.recipe_ingredients.map(ri => ({...ri.products, amount: ri.amount, product_id: ri.product_id})), image_url: r.image_url})}}>{r.name}</span>
-                <button onClick={() => deleteRecipe(r.id)} style={iconBtn}>🗑️</button>
-              </div>
+              <div key={r.id} style={productRowS}><span style={{cursor:'pointer', flex:1}} onClick={() => setNewRecipe({...r, steps: r.steps || [], ingredients: r.recipe_ingredients.map(ri => ({...ri.products, amount: ri.amount, product_id: ri.product_id}))})}>{r.name}</span><button onClick={() => deleteRecipe(r.id)} style={iconBtn}>🗑️</button></div>
             ))}
           </div>
         </Modal>
@@ -353,15 +338,11 @@ export default function App() {
 
       {/* MODAL: DODAWANIE DO ZAKUPÓW */}
       {activeModal === 'shopping-add' && (
-        <Modal title="🛒 Dodaj do listy" onClose={() => setActiveModal(null)} isMobile={isMobile}>
-          <h4>Produkty:</h4>
-          <div style={{maxHeight:'200px', overflowY:'auto', marginBottom:'20px'}}>
-            {products.map(p => <div key={p.id} style={productRowS} onClick={() => addToManualList(p, 'product')}><span>{p.name}</span> <button style={btnViewS}>+</button></div>)}
-          </div>
-          <h4>Z przepisów:</h4>
-          <div style={{maxHeight:'200px', overflowY:'auto'}}>
-            {recipes.map(r => <div key={r.id} style={productRowS} onClick={() => addToManualList(r, 'recipe')}><span>{r.name}</span> <button style={btnViewS}>+ Składniki</button></div>)}
-          </div>
+        <Modal title="🛒 Dodaj do zakupów" onClose={() => setActiveModal(null)} isMobile={isMobile}>
+          <h4>Z produktów:</h4>
+          {products.map(p => <div key={p.id} style={productRowS} onClick={() => addToManualList(p, 'product')}><span>{p.name}</span> <button style={btnViewS}>+</button></div>)}
+          <h4 style={{marginTop:'20px'}}>Z przepisów:</h4>
+          {recipes.map(r => <div key={r.id} style={productRowS} onClick={() => addToManualList(r, 'recipe')}><span>{r.name}</span> <button style={btnViewS}>+ Składniki</button></div>)}
         </Modal>
       )}
 
@@ -373,33 +354,19 @@ export default function App() {
             <div style={{display:'flex', gap:'5px'}}><input style={inputS} type="number" placeholder="Cena" value={newProd.price} onChange={e => setNewProd({...newProd, price: e.target.value})} /><input style={inputS} type="number" placeholder="Ilość" value={newProd.amount} onChange={e => setNewProd({...newProd, amount: e.target.value})} /><select style={inputS} value={newProd.unit} onChange={e => setNewProd({...newProd, unit: e.target.value})}><option value="g">g</option><option value="ml">ml</option><option value="szt">szt</option></select></div>
             <button style={btnSuccessFull} onClick={handleSaveProduct}>Zapisz</button>
           </div>
-          <div style={{maxHeight:'250px', overflowY:'auto'}}>
-            {products.map(p => (
-              <div key={p.id} style={productRowS}>
-                <span style={{cursor:'pointer', flex:1}} onClick={() => setNewProd({id:p.id, name:p.name, price:(p.price_per_unit*(p.last_input_quantity||1)).toFixed(2), amount:p.last_input_quantity||1, unit:p.unit})}><b>{p.name}</b> ({p.price_per_unit.toFixed(2)})</span>
-                <button onClick={() => deleteProduct(p.id)} style={iconBtn}>🗑️</button>
-              </div>
-            ))}
-          </div>
+          {products.map(p => <div key={p.id} style={productRowS}><span style={{cursor:'pointer', flex:1}} onClick={() => setNewProd({id:p.id, name:p.name, price:(p.price_per_unit*(p.last_input_quantity||1)).toFixed(2), amount:p.last_input_quantity||1, unit:p.unit})}><b>{p.name}</b> ({p.price_per_unit.toFixed(2)})</span><button onClick={() => deleteProduct(p.id)} style={iconBtn}>🗑️</button></div>)}
         </Modal>
       )}
 
-      {/* MODAL: WIDOK PRZEPISU */}
+      {/* MODAL: PODGLĄD */}
       {activeModal === 'view-recipe' && viewingRecipe && (
         <Modal title={viewingRecipe.name} onClose={() => setActiveModal(null)} isMobile={isMobile}>
-          <div style={{display:'flex', gap:'10px', marginBottom:'15px'}}>
-            <button style={viewMode === 'desc' ? btnFilterActive : btnFilter} onClick={() => setViewMode('desc')}>Opis</button>
-            <button style={viewMode === 'steps' ? btnFilterActive : btnFilter} onClick={() => setViewMode('steps')}>Kroki ({viewingRecipe.steps?.length || 0})</button>
-          </div>
-          {viewingRecipe.image_url && <img src={viewingRecipe.image_url} style={{width:'100%', height:'220px', objectFit:'cover', borderRadius:'15px', marginBottom:'15px'}} />}
-          <div style={{maxHeight:'45vh', overflowY:'auto'}}>
-            {viewMode === 'desc' ? <p style={{whiteSpace:'pre-wrap', background:'#f8fafc', padding:'15px', borderRadius:'10px'}}>{viewingRecipe.instructions || "Brak opisu."}</p> : 
-            viewingRecipe.steps?.map((s, i) => <div key={i} style={stepItemS}><b>Krok {i+1}</b><br/>{s}</div>)}
-          </div>
+          <div style={{display:'flex', gap:'10px', marginBottom:'15px'}}><button style={viewMode === 'desc' ? btnFilterActive : btnFilter} onClick={() => setViewMode('desc')}>Opis</button><button style={viewMode === 'steps' ? btnFilterActive : btnFilter} onClick={() => setViewMode('steps')}>Kroki</button></div>
+          {viewingRecipe.image_url && <img src={viewingRecipe.image_url} style={{width:'100%', height:'200px', objectFit:'cover', borderRadius:'10px', marginBottom:'15px'}} />}
+          <div style={{maxHeight:'40vh', overflowY:'auto'}}>{viewMode === 'desc' ? <p style={{whiteSpace:'pre-wrap', background:'#f8fafc', padding:'15px', borderRadius:'10px'}}>{viewingRecipe.instructions || "Brak opisu."}</p> : viewingRecipe.steps?.map((s, i) => <div key={i} style={stepItemS}><b>Krok {i+1}</b><br/>{s}</div>)}</div>
         </Modal>
       )}
 
-      {/* MODAL: WYBÓR DO KALENDARZA */}
       {activeModal === 'cell' && (
         <Modal title="Wybierz posiłek" onClose={() => setActiveModal(null)} isMobile={isMobile}>
           <div style={filterBar}>{["Wszystkie", ...MEAL_TYPES].map(cat => <button key={cat} onClick={() => setFilterCategory(cat === "Wszystkie" ? "" : cat)} style={filterCategory === (cat === "Wszystkie" ? "" : cat) ? btnFilterActive : btnFilter}>{cat}</button>)}</div>
@@ -437,7 +404,7 @@ const mobileDayLabel = { background:'#059669', color:'white', padding:'12px', bo
 const mealHeader = { textAlign:'center', fontWeight:'bold', color:'#64748b' };
 const cellStyle = { minHeight:'100px', background:'white', borderRadius:'12px', border:'1px solid #e5e7eb', display:'flex', alignItems:'center', justifyContent:'center', cursor:'pointer', position:'relative', overflow:'hidden' };
 const cellStyleActive = { ...cellStyle, border:'2px solid #059669' };
-const mealContent = { width:'100%', textAlign:'center', padding:'10px', zIndex: 2 };
+const mealContent = { width:'100%', textAlign:'center', padding:'10px', zIndex: 2, textShadow: '0px 0px 5px rgba(0,0,0,0.5)' };
 const mealNameS = { fontWeight:'bold', fontSize:'13px' };
 const btnViewS = { background:'#f3f4f6', border:'none', padding:'5px 12px', borderRadius:'6px', fontSize:'10px', cursor:'pointer', marginTop:'8px' };
 const btnDeleteSmall = { position:'absolute', top:'5px', right:'5px', background:'#fee2e2', color:'#ef4444', border:'none', borderRadius:'50%', width:'22px', height:'22px' };
