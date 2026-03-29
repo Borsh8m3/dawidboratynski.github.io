@@ -1,48 +1,34 @@
-name: Deploy Smart Planer
+name: Deploy Jedzonko Planer
 
 on:
   push:
-    branches: [main]
-
-permissions:
-  contents: read
-  pages: write
-  id-token: write
+    branches:
+      - main  # lub master, zależnie jak nazywa się Twoja gałąź
 
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout Repository
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 20  # Ustawienie wersji Node
 
-      - name: Install Dependencies
-        run: npm install
+      - name: Install dependencies
+        run: npm install  # TO JEST KLUCZOWE - bez tego wywali błąd 127
 
-      - name: Build Project
+      - name: Build project
         run: npm run build
         env:
-          # GitHub pobiera te wartości z Twoich Secrets/Variables i wstrzykuje do Vite
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
 
-      - name: Upload Artifact
-        uses: actions/upload-pages-artifact@v3
+      - name: Deploy to GitHub Pages # (Jeśli tam hostujesz)
+        uses: JamesIves/github-pages-deploy-action@v4
         with:
-          path: dist
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+          folder: dist # Vite buduje do folderu dist
+          branch: gh-pages
