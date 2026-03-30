@@ -1,13 +1,16 @@
+
+
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { createClient } from '@supabase/supabase-js';
 
-//const supabase = createClient(
-//  import.meta.env.VITE_SUPABASE_URL || '',
-//  import.meta.env.VITE_SUPABASE_ANON_KEY || ''
-//);
-const SUPABASE_URL = 'TWÓJ_URL';
-const SUPABASE_ANON_KEY = 'TWÓJ_KLUCZ';
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const supabase = createClient(
+  import.meta.env.VITE_SUPABASE_URL || '',
+  import.meta.env.VITE_SUPABASE_ANON_KEY || ''
+);
+
+// const SUPABASE_URL = 'TWÓJ_URL';
+// const SUPABASE_ANON_KEY = 'TWÓJ_KLUCZ';
+// const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 const MEAL_TYPES = ['Śniadanie', 'Lunch', 'Obiad', 'Podwieczorek', 'Kolacja'];
 const DAYS = [
@@ -29,7 +32,7 @@ export default function App() {
   const [weekOffset, setWeekOffset] = useState(0);
   const [isMobile, setIsMobile] = useState(window.innerWidth < 900);
 
-  // Stan dla ręcznie dodanych rzeczy do koszyka
+  // Stan dla ręcznie dodanych rzeczy do koszyka (poza tymi z kalendarza)
   const [manualCart, setManualCart] = useState([]);
   const [checkedItems, setCheckedItems] = useState({});
 
@@ -117,10 +120,11 @@ export default function App() {
     });
   }, [weekOffset]);
 
-  // --- LOGIKA KOSZYKA (DYNAMICZNA Z TYGODNIA + RĘCZNA) ---
+  // --- LOGIKA KOSZYKA (DYNAMICZNA + RĘCZNA) ---
   const finalShoppingList = useMemo(() => {
     const combined = {};
-    // 1. Składniki z planu na tydzień
+
+    // 1. Dodaj składniki z planu posiłków na dany tydzień
     weekDates.forEach((d) => {
       const dayMeals = mealPlan.filter((m) => m.date === d.fullDate);
       dayMeals.forEach((m) => {
@@ -142,7 +146,8 @@ export default function App() {
         });
       });
     });
-    // 2. Składniki dodane ręcznie
+
+    // 2. Dodaj rzeczy dorzucone ręcznie
     manualCart.forEach((item) => {
       const key = `${item.name}-${item.unit}`;
       if (!combined[key])
@@ -156,20 +161,52 @@ export default function App() {
         };
       combined[key].amount += parseFloat(item.amount);
     });
+
     return Object.values(combined).map((it) => ({
       ...it,
       cost: (it.pricePU * it.amount).toFixed(2),
     }));
   }, [weekDates, mealPlan, recipes, manualCart]);
 
-  const handleFileUpload = (e) => {
-    const file = e.target.files[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () =>
-        setNewRecipe({ ...newRecipe, image_url: reader.result });
-      reader.readAsDataURL(file);
-    }
+  const dailyStats = useMemo(() => {
+    const daily = {};
+    let weekly = 0;
+    weekDates.forEach((d) => {
+      const dayMeals = mealPlan.filter((m) => m.date === d.fullDate);
+      let cost = 0;
+      dayMeals.forEach((m) => {
+        const r = recipes.find((rec) => rec.id === m.recipe_id);
+        if (r?.total_cost) cost += parseFloat(r.total_cost);
+      });
+      daily[d.fullDate] = cost.toFixed(2);
+      weekly += cost;
+    });
+    return { daily, weekly: weekly.toFixed(2) };
+  }, [weekDates, mealPlan, recipes]);
+
+  // --- HANDLERS ---
+  const handleAddManualProduct = (p) => {
+    setManualCart((prev) => [
+      ...prev,
+      {
+        id: p.id,
+        name: p.name,
+        amount: p.last_input_quantity || 100,
+        unit: p.unit,
+        pricePU: p.price_per_unit,
+      },
+    ]);
+  };
+
+  const handleAddManualRecipe = (r) => {
+    const ings = r.recipe_ingredients.map((ri) => ({
+      id: ri.products.id,
+      name: ri.products.name,
+      amount: ri.amount,
+      unit: ri.products.unit,
+      pricePU: ri.products.price_per_unit,
+    }));
+    setManualCart((prev) => [...prev, ...ings]);
   };
 
   const handleSaveProduct = async () => {
@@ -238,18 +275,25 @@ export default function App() {
     fetchData();
   };
 
-  if (loading)
-    return <div style={loadingStyle}>🍳 Rozgrzewanie patelni...</div>;
+  if (loading) return <div style={loadingStyle}>🍳 Rozgrzewanie kuchni...</div>;
   if (!session) return <LoginView />;
 
   return (
     <div style={appContainer}>
       <header style={isMobile ? headerMobile : headerStyle}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
-          <div style={logoCircleS}>🥗</div>
+          <div style={logoCircleS}>🍳</div>
           <div>
-            <h1 style={logoTitleS}>Jedzonko Planer</h1>
-            <small style={{ color: '#64748b', fontWeight: 'bold' }}>
+            <h1
+              style={{
+                margin: 0,
+                color: '#059669',
+                fontSize: isMobile ? '20px' : '26px',
+              }}
+            >
+              Jedzonko P
+            </h1>
+            <small style={{ color: '#64748b' }}>
               {weekDates[0].displayDate} - {weekDates[6].displayDate}
             </small>
           </div>
@@ -294,11 +338,17 @@ export default function App() {
                 <b>{day.name}</b>
                 <br />
                 <small>{day.displayDate}</small>
+                {isMobile && (
+                  <div style={{ color: '#059669' }}>
+                    {dailyStats.daily[day.fullDate]} zł
+                  </div>
+                )}
               </div>
               {MEAL_TYPES.map((type) => {
                 const m = mealPlan.find(
                   (p) => p.date === day.fullDate && p.meal_type === type
                 );
+                // DYNAMICZNE TŁO ZDJĘCIA
                 const bgImage = m?.recipes?.image_url
                   ? `linear-gradient(rgba(255,255,255,0.7), rgba(255,255,255,0.7)), url(${m.recipes.image_url})`
                   : 'white';
@@ -327,43 +377,34 @@ export default function App() {
                           {m.recipes.name}
                         </div>
                         <div style={mealPriceS}>
-                          {parseFloat(m.recipes.total_cost).toFixed(2)} zł
+                          {parseFloat(m.recipes.total_cost || 0).toFixed(2)} zł
                         </div>
-                        <div
-                          style={{
-                            display: 'flex',
-                            gap: '5px',
-                            justifyContent: 'center',
-                            marginTop: '8px',
+                        <button
+                          style={btnViewSmall}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setViewingRecipe(m.recipes);
+                            setViewMode('desc');
+                            setActiveModal('view-recipe');
                           }}
                         >
-                          <button
-                            style={btnViewSmall}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setViewingRecipe(m.recipes);
-                              setViewMode('desc');
-                              setActiveModal('view-recipe');
-                            }}
-                          >
-                            Pokaż
-                          </button>
-                          <button
-                            style={btnDelSmall}
-                            onClick={async (e) => {
-                              e.stopPropagation();
-                              if (confirm('Usunąć?')) {
-                                await supabase
-                                  .from('meal_plan')
-                                  .delete()
-                                  .eq('id', m.id);
-                                fetchData();
-                              }
-                            }}
-                          >
-                            ✕
-                          </button>
-                        </div>
+                          Pokaż
+                        </button>
+                        <button
+                          style={btnDelSmall}
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            if (confirm('Usunąć?')) {
+                              await supabase
+                                .from('meal_plan')
+                                .delete()
+                                .eq('id', m.id);
+                              fetchData();
+                            }
+                          }}
+                        >
+                          ✕
+                        </button>
                       </div>
                     ) : (
                       <span style={{ opacity: 0.2, fontSize: '24px' }}>+</span>
@@ -374,28 +415,42 @@ export default function App() {
             </React.Fragment>
           ))}
         </div>
+        {!isMobile && (
+          <div style={sidePanel}>
+            <h3 style={{ marginTop: 0 }}>💰 Koszty</h3>
+            {weekDates.map((d) => (
+              <div key={d.fullDate} style={sideRow}>
+                <span>{d.name}</span>
+                <b>{dailyStats.daily[d.fullDate]} zł</b>
+              </div>
+            ))}
+            <div style={grandTotalS}>
+              <span>Suma:</span>
+              <b>{dailyStats.weekly} zł</b>
+            </div>
+          </div>
+        )}
       </div>
 
-      {/* POPRAWIONA LISTA ZAKUPÓW */}
       <div style={shoppingPanel}>
         <div
           style={{
             display: 'flex',
             justifyContent: 'space-between',
             alignItems: 'center',
-            marginBottom: '20px',
+            marginBottom: '15px',
           }}
         >
-          <h3 style={{ color: '#059669', margin: 0 }}>🛒 Lista zakupów</h3>
+          <h3 style={{ color: '#059669', margin: 0 }}>🛒 Koszyk zakupowy</h3>
           <div style={{ display: 'flex', gap: '10px' }}>
             <button
-              style={btnPrimSmall}
+              style={btnPrim}
               onClick={() => setActiveModal('add-to-cart')}
             >
               Dodaj +
             </button>
             <button
-              style={{ ...btnSec, padding: '8px 16px', fontSize: '12px' }}
+              style={{ ...btnSec, padding: '5px 15px' }}
               onClick={() => {
                 setManualCart([]);
                 setCheckedItems({});
@@ -406,144 +461,137 @@ export default function App() {
           </div>
         </div>
         <div style={shoppingGrid}>
-          {finalShoppingList.map((i) => {
-            const isChecked = checkedItems[i.name];
-            let dAmount = i.amount;
-            let dUnit = i.unit;
-            if ((i.unit === 'g' || i.unit === 'ml') && i.amount >= 1000) {
-              dAmount = (i.amount / 1000).toFixed(2);
-              dUnit = i.unit === 'g' ? 'kg' : 'l';
-            }
-            return (
+          {finalShoppingList.map((i) => (
+            <div
+              key={i.name}
+              onClick={() =>
+                setCheckedItems((p) => ({ ...p, [i.name]: !p[i.name] }))
+              }
+              style={{
+                ...shoppingItem,
+                opacity: checkedItems[i.name] ? 0.5 : 1,
+                border: checkedItems[i.name]
+                  ? '1px solid #059669'
+                  : '1px solid #f3f4f6',
+                cursor: 'pointer',
+              }}
+            >
               <div
-                key={i.name}
-                onClick={() =>
-                  setCheckedItems((p) => ({ ...p, [i.name]: !p[i.name] }))
-                }
-                style={{
-                  ...shoppingItem,
-                  opacity: isChecked ? 0.5 : 1,
-                  border: isChecked ? '1px solid #059669' : '1px solid #e2e8f0',
-                  background: isChecked ? '#f0fdf4' : '#fff',
-                }}
+                style={{ display: 'flex', gap: '10px', alignItems: 'center' }}
               >
                 <div
                   style={{
-                    display: 'flex',
-                    gap: '12px',
-                    alignItems: 'center',
-                    flex: 1,
+                    width: '18px',
+                    height: '18px',
+                    border: '2px solid #059669',
+                    borderRadius: '4px',
+                    background: checkedItems[i.name]
+                      ? '#059669'
+                      : 'transparent',
+                    color: 'white',
+                    textAlign: 'center',
+                    lineHeight: '16px',
                   }}
                 >
-                  <div
-                    style={{
-                      width: '22px',
-                      height: '22px',
-                      border: '2px solid #059669',
-                      borderRadius: '6px',
-                      background: isChecked ? '#059669' : 'transparent',
-                      color: 'white',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      fontSize: '14px',
-                    }}
-                  >
-                    {isChecked && '✓'}
-                  </div>
-                  <div>
-                    <div
-                      style={{
-                        fontWeight: '700',
-                        fontSize: '14px',
-                        textDecoration: isChecked ? 'line-through' : 'none',
-                      }}
-                    >
-                      {i.name}
-                    </div>
-                    <div style={{ fontSize: '12px', color: '#64748b' }}>
-                      {dAmount} {dUnit}
-                    </div>
-                  </div>
+                  {checkedItems[i.name] && '✓'}
                 </div>
-                <b
+                <div
                   style={{
-                    color: isChecked ? '#94a3b8' : '#059669',
-                    fontSize: '14px',
+                    textDecoration: checkedItems[i.name]
+                      ? 'line-through'
+                      : 'none',
                   }}
                 >
-                  {i.cost} zł
-                </b>
+                  <b>{i.name}</b>
+                  <br />
+                  <small>
+                    {i.amount} {i.unit}
+                  </small>
+                </div>
               </div>
-            );
-          })}
+              <b style={{ color: '#059669' }}>{i.cost} zł</b>
+            </div>
+          ))}
         </div>
       </div>
 
-      {/* MODAL: DODAWANIE RĘCZNE DO KOSZYKA */}
+            {/* MODAL: STATYSTYKI (ŚLEDŹ ZAKUPY) */}
+      {activeModal === 'stats' && (
+        <Modal title="📈 Summary" onClose={() => setActiveModal(null)} isMobile={isMobile}>
+          <div style={{maxHeight:'70vh', overflowY:'auto'}}>
+            <div style={statSection}>
+              <h4>💳 Wydatki miesięczne</h4>
+              {advancedStats.monthly.map(([month, val]) => (
+                <div key={month} style={sideRow}><span>{month}</span><b style={{color:'#059669'}}>{val.toFixed(2)} zł</b></div>
+              ))}
+            </div>
+            
+            <div style={statSection}>
+              <h4>⭐ Najczęstsze dania</h4>
+              {advancedStats.topRecipes.map(([name, count]) => (
+                <div key={name} style={sideRow}><span>{name}</span><b>{count}x</b></div>
+              ))}
+            </div>
+
+            <div style={statSection}>
+              <h4>💸 Najkosztowniejsze składniki</h4>
+              {advancedStats.topIngredients.map(([name, data]) => (
+                <div key={name} style={sideRow}><span>{name}</span><b style={{color:'#ef4444'}}>{data.cost.toFixed(2)} zł</b></div>
+              ))}
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* MODAL: DODAJ DO KOSZYKA (RĘCZNIE) */}
       {activeModal === 'add-to-cart' && (
         <Modal
-          title="🛒 Dodaj do listy"
+          title="🛒 Dodaj do koszyka"
           onClose={() => setActiveModal(null)}
           isMobile={isMobile}
         >
           <div style={{ maxHeight: '60vh', overflowY: 'auto' }}>
-            <h4 style={{ marginTop: 0 }}>Składniki z przepisu:</h4>
+            <h4>Wybierz przepis:</h4>
             {recipes.map((r) => (
               <div
                 key={r.id}
                 style={recipeListItem}
                 onClick={() => {
-                  const ings = r.recipe_ingredients.map((ri) => ({
-                    id: ri.products.id,
-                    name: ri.products.name,
-                    amount: ri.amount,
-                    unit: ri.products.unit,
-                    pricePU: ri.products.price_per_unit,
-                  }));
-                  setManualCart((p) => [...p, ...ings]);
+                  handleAddManualRecipe(r);
                   setActiveModal(null);
                 }}
               >
                 <span>{r.name}</span>{' '}
-                <button style={btnCartAddSmall}>+ Wszystkie</button>
+                <button style={btnCartAddSmall}>+ Wszystkie składniki</button>
               </div>
             ))}
-            <h4 style={{ marginTop: '20px' }}>Pojedynczy produkt:</h4>
+            <hr />
+            <h4>Lub pojedynczy produkt:</h4>
             {products.map((p) => (
               <div
                 key={p.id}
                 style={productRowS}
                 onClick={() => {
-                  setManualCart((prev) => [
-                    ...prev,
-                    {
-                      id: p.id,
-                      name: p.name,
-                      amount: p.last_input_quantity || 100,
-                      unit: p.unit,
-                      pricePU: p.price_per_unit,
-                    },
-                  ]);
+                  handleAddManualProduct(p);
                   setActiveModal(null);
                 }}
               >
                 <span>{p.name}</span>{' '}
-                <button style={btnCartAddSmall}>Dodaj +</button>
+                <button style={btnCartAddSmall}>Dodaj</button>
               </div>
             ))}
           </div>
         </Modal>
       )}
 
-      {/* MODAL: PRZEPISY (Z FOTO I KROKAMI) */}
+      {/* MODAL: PRZEPISY (Z LINKIEM DO ZDJĘCIA) */}
       {activeModal === 'recipe' && (
         <Modal
           title="👨‍🍳 Zarządzanie"
           onClose={() => setActiveModal(null)}
           isMobile={isMobile}
         >
-          <div style={{ maxHeight: '75vh', overflowY: 'auto' }}>
+          <div style={{ maxHeight: '70vh', overflowY: 'auto' }}>
             <div style={formBoxS}>
               <input
                 style={inputS}
@@ -553,260 +601,52 @@ export default function App() {
                   setNewRecipe({ ...newRecipe, name: e.target.value })
                 }
               />
-              <div style={{ marginBottom: '15px' }}>
-                <label style={fileLabelS}>
-                  {newRecipe.image_url
-                    ? '✅ Zdjęcie wybrane'
-                    : '📷 Dodaj zdjęcie z galerii'}
-                  <input
-                    type="file"
-                    accept="image/*"
-                    onChange={handleFileUpload}
-                    style={{ display: 'none' }}
-                  />
-                </label>
-                {newRecipe.image_url && (
-                  <img
-                    src={newRecipe.image_url}
-                    style={{
-                      width: '100%',
-                      height: '120px',
-                      objectFit: 'cover',
-                      borderRadius: '12px',
-                      marginTop: '10px',
-                    }}
-                  />
-                )}
-              </div>
+              <input
+                style={inputS}
+                placeholder="Link do zdjęcia URL"
+                value={newRecipe.image_url}
+                onChange={(e) =>
+                  setNewRecipe({ ...newRecipe, image_url: e.target.value })
+                }
+              />
               <textarea
                 style={inputS}
-                placeholder="Opis ogólny..."
+                placeholder="Opis przygotowania..."
                 value={newRecipe.instructions}
                 onChange={(e) =>
                   setNewRecipe({ ...newRecipe, instructions: e.target.value })
                 }
               />
-              <div style={{ margin: '15px 0' }}>
-                <label style={{ fontWeight: 'bold', fontSize: '14px' }}>
-                  Kroki:
-                </label>
-                {newRecipe.steps.map((s, i) => (
-                  <div
-                    key={i}
-                    style={{ display: 'flex', gap: '8px', marginTop: '8px' }}
-                  >
-                    <div style={stepCircleS}>{i + 1}</div>
-                    <input
-                      style={inputS}
-                      value={s}
-                      onChange={(e) => {
-                        const c = [...newRecipe.steps];
-                        c[i] = e.target.value;
-                        setNewRecipe({ ...newRecipe, steps: c });
-                      }}
-                    />
-                    <button
-                      onClick={() =>
-                        setNewRecipe({
-                          ...newRecipe,
-                          steps: newRecipe.steps.filter((_, idx) => idx !== i),
-                        })
-                      }
-                      style={btnDelSmall}
-                    >
-                      ✕
-                    </button>
-                  </div>
-                ))}
-                <button
-                  style={{ ...btnSec, width: '100%', padding: '10px' }}
-                  onClick={() =>
-                    setNewRecipe({
-                      ...newRecipe,
-                      steps: [...newRecipe.steps, ''],
-                    })
-                  }
-                >
-                  + Dodaj krok
-                </button>
-              </div>
-              <input
-                style={inputS}
-                placeholder="🔍 Składnik..."
-                onChange={(e) => setSearchQuery(e.target.value)}
-              />
-              {searchQuery && (
-                <div style={searchResultsS}>
-                  {products
-                    .filter((p) =>
-                      p.name.toLowerCase().includes(searchQuery.toLowerCase())
-                    )
-                    .map((p) => (
-                      <div
-                        key={p.id}
-                        style={searchItemS}
-                        onClick={() => {
-                          setNewRecipe({
-                            ...newRecipe,
-                            ingredients: [
-                              ...newRecipe.ingredients,
-                              { ...p, amount: 100 },
-                            ],
-                          });
-                          setSearchQuery('');
-                        }}
-                      >
-                        {p.name}
-                      </div>
-                    ))}
-                </div>
-              )}
-              {newRecipe.ingredients.map((ing, idx) => (
-                <div key={idx} style={ingRowS}>
-                  <span>{ing.name}</span>
-                  <button
-                    onClick={() =>
-                      setNewRecipe({
-                        ...newRecipe,
-                        ingredients: newRecipe.ingredients.filter(
-                          (_, i) => i !== idx
-                        ),
-                      })
-                    }
-                    style={{ color: 'red', border: 'none', background: 'none' }}
-                  >
-                    ✕
-                  </button>
-                </div>
-              ))}
               <button style={btnSuccessFull} onClick={handleSaveRecipe}>
-                Zapisz Przepis
+                Zapisz
               </button>
             </div>
-            {recipes
-              .filter((r) => r.category === recipeListCategory)
-              .map((r) => (
-                <div key={r.id} style={productRowS}>
-                  <span>{r.name}</span>
-                  <div style={{ display: 'flex', gap: '8px' }}>
-                    <button
-                      onClick={() =>
-                        setNewRecipe({
-                          ...r,
-                          steps: r.steps || [],
-                          ingredients: r.recipe_ingredients.map((ri) => ({
-                            ...ri.products,
-                            amount: ri.amount,
-                            product_id: ri.product_id,
-                          })),
-                        })
-                      }
-                      style={iconBtn}
-                    >
-                      ✏️
-                    </button>
-                  </div>
-                </div>
-              ))}
-          </div>
-        </Modal>
-      )}
-
-      {/* MODAL: PRODUKTY (Z USUWANIEM) */}
-      {activeModal === 'product' && (
-        <Modal
-          title="📦 Produkty"
-          onClose={() => setActiveModal(null)}
-          isMobile={isMobile}
-        >
-          <div style={formBoxS}>
-            <input
-              style={inputS}
-              placeholder="Nazwa"
-              value={newProd.name}
-              onChange={(e) => setNewProd({ ...newProd, name: e.target.value })}
-            />
-            <div style={{ display: 'flex', gap: '8px' }}>
-              <input
-                style={inputS}
-                type="number"
-                placeholder="Cena"
-                value={newProd.price}
-                onChange={(e) =>
-                  setNewProd({ ...newProd, price: e.target.value })
-                }
-              />
-              <input
-                style={inputS}
-                type="number"
-                placeholder="Ilość"
-                value={newProd.amount}
-                onChange={(e) =>
-                  setNewProd({ ...newProd, amount: e.target.value })
-                }
-              />
-              <select
-                style={inputS}
-                value={newProd.unit}
-                onChange={(e) =>
-                  setNewProd({ ...newProd, unit: e.target.value })
-                }
-              >
-                <option value="g">g</option>
-                <option value="ml">ml</option>
-                <option value="szt">szt</option>
-              </select>
-            </div>
-            <button style={btnSuccessFull} onClick={handleSaveProduct}>
-              Zapisz
-            </button>
-          </div>
-          <div style={{ maxHeight: '350px', overflowY: 'auto' }}>
-            {products.map((p) => (
-              <div key={p.id} style={productRowS}>
-                <div>
-                  <b>{p.name}</b>
-                  <br />
-                  <small>
-                    {parseFloat(p.price_per_unit).toFixed(4)}/{p.unit}
-                  </small>
-                </div>
-                <div style={{ display: 'flex', gap: '12px' }}>
-                  <button
-                    onClick={() =>
-                      setNewProd({
-                        id: p.id,
-                        name: p.name,
-                        price: (
-                          p.price_per_unit * p.last_input_quantity
-                        ).toFixed(2),
-                        amount: p.last_input_quantity,
-                        unit: p.unit,
-                      })
-                    }
-                    style={iconBtn}
-                  >
-                    ✏️
-                  </button>
-                  <button
-                    onClick={async () => {
-                      if (confirm('Usunąć produkt?')) {
-                        await supabase.from('products').delete().eq('id', p.id);
-                        fetchData();
-                      }
-                    }}
-                    style={{ ...iconBtn, color: '#ef4444' }}
-                  >
-                    🗑️
-                  </button>
-                </div>
+            {recipes.map((r) => (
+              <div key={r.id} style={productRowS}>
+                <span>{r.name}</span>
+                <button
+                  onClick={() =>
+                    setNewRecipe({
+                      ...r,
+                      steps: r.steps || [],
+                      ingredients: r.recipe_ingredients.map((ri) => ({
+                        ...ri.products,
+                        amount: ri.amount,
+                        product_id: ri.product_id,
+                      })),
+                    })
+                  }
+                  style={iconBtn}
+                >
+                  ✏️
+                </button>
               </div>
             ))}
           </div>
         </Modal>
       )}
 
-      {/* MODAL PODGLĄD */}
+      {/* MODAL: PODGLĄD (TRYB KROKÓW) */}
       {activeModal === 'view-recipe' && viewingRecipe && (
         <Modal
           title={viewingRecipe.name}
@@ -842,8 +682,9 @@ export default function App() {
             ) : (
               viewingRecipe.steps?.map((s, i) => (
                 <div key={i} style={stepItemS}>
-                  <div style={stepCircleS}>{i + 1}</div>
-                  <div style={{ flex: 1 }}>{s}</div>
+                  <b>Krok {i + 1}</b>
+                  <br />
+                  {s}
                 </div>
               ))
             )}
@@ -851,9 +692,84 @@ export default function App() {
         </Modal>
       )}
 
+      {/* INNE MODALE (PRODUKTY, CELL) - Jak wcześniej */}
+      {activeModal === 'product' && (
+        <Modal
+          title="📦 Produkty"
+          onClose={() => setActiveModal(null)}
+          isMobile={isMobile}
+        >
+          <div style={formBoxS}>
+            <input
+              style={inputS}
+              placeholder="Nazwa"
+              value={newProd.name}
+              onChange={(e) => setNewProd({ ...newProd, name: e.target.value })}
+            />
+            <div style={{ display: 'flex', gap: '5px' }}>
+              <input
+                style={inputS}
+                type="number"
+                placeholder="Cena"
+                value={newProd.price}
+                onChange={(e) =>
+                  setNewProd({ ...newProd, price: e.target.value })
+                }
+              />
+              <input
+                style={inputS}
+                type="number"
+                placeholder="Ilość"
+                value={newProd.amount}
+                onChange={(e) =>
+                  setNewProd({ ...newProd, amount: e.target.value })
+                }
+              />
+              <select
+                style={inputS}
+                value={newProd.unit}
+                onChange={(e) =>
+                  setNewProd({ ...newProd, unit: e.target.value })
+                }
+              >
+                <option value="g">g</option>
+                <option value="ml">ml</option>
+                <option value="szt">szt</option>
+              </select>
+            </div>
+            <button style={btnSuccessFull} onClick={handleSaveProduct}>
+              Zapisz
+            </button>
+          </div>
+          <div style={{ maxHeight: '250px', overflowY: 'auto' }}>
+            {products.map((p) => (
+              <div key={p.id} style={productRowS}>
+                <span>{p.name}</span>
+                <button
+                  onClick={() =>
+                    setNewProd({
+                      id: p.id,
+                      name: p.name,
+                      price: (p.price_per_unit * p.last_input_quantity).toFixed(
+                        2
+                      ),
+                      amount: p.last_input_quantity,
+                      unit: p.unit,
+                    })
+                  }
+                  style={iconBtn}
+                >
+                  ✏️
+                </button>
+              </div>
+            ))}
+          </div>
+        </Modal>
+      )}
+
       {activeModal === 'cell' && (
         <Modal
-          title="Dodaj do planu"
+          title="Wybierz posiłek"
           onClose={() => setActiveModal(null)}
           isMobile={isMobile}
         >
@@ -874,27 +790,30 @@ export default function App() {
               </button>
             ))}
           </div>
-          <div style={{ maxHeight: '350px', overflowY: 'auto' }}>
+          <div style={{ maxHeight: '300px', overflowY: 'auto' }}>
             {recipes
               .filter((r) => !filterCategory || r.category === filterCategory)
+              .sort((a, b) => b.is_favorite - a.is_favorite)
               .map((r) => (
                 <div
                   key={r.id}
                   style={recipeListItem}
                   onClick={async () => {
-                    await supabase.from('meal_plan').insert([
-                      {
-                        date: selectedCell.date,
-                        meal_type: selectedCell.type,
-                        recipe_id: r.id,
-                      },
-                    ]);
+                    await supabase
+                      .from('meal_plan')
+                      .insert([
+                        {
+                          date: selectedCell.date,
+                          meal_type: selectedCell.type,
+                          recipe_id: r.id,
+                        },
+                      ]);
                     setActiveModal(null);
                     fetchData();
                   }}
                 >
                   <span>{r.name}</span>{' '}
-                  <b>{parseFloat(r.total_cost).toFixed(2)} zł</b>
+                  <b>{parseFloat(r.total_cost || 0).toFixed(2)} zł</b>
                 </div>
               ))}
           </div>
@@ -904,7 +823,7 @@ export default function App() {
   );
 }
 
-// --- LOGIN ---
+// --- LOGIN VIEW ---
 function LoginView() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -919,7 +838,7 @@ function LoginView() {
   return (
     <div style={loginOverlay}>
       <form onSubmit={handleLogin} style={loginForm}>
-        <h2>🥗 Jedzonko Planer</h2>
+        <h2>Jedzonko P</h2>
         <input
           style={inputS}
           type="email"
@@ -941,16 +860,16 @@ function LoginView() {
 function Modal({ title, children, onClose, isMobile }) {
   const mS = {
     background: 'white',
-    padding: isMobile ? '20px' : '30px',
-    borderRadius: '24px',
-    width: isMobile ? '92%' : '580px',
-    boxShadow: '0 25px 50px -12px rgba(0,0,0,0.25)',
+    padding: isMobile ? '15px' : '25px',
+    borderRadius: '20px',
+    width: isMobile ? '90%' : '550px',
+    boxShadow: '0 20px 50px rgba(0,0,0,0.15)',
     zIndex: 1100,
     position: 'relative',
   };
   return (
-    <div style={overlayS} onClick={onClose}>
-      <div style={mS} onClick={(e) => e.stopPropagation()}>
+    <div style={overlayS}>
+      <div style={mS}>
         <div
           style={{
             display: 'flex',
@@ -967,7 +886,6 @@ function Modal({ title, children, onClose, isMobile }) {
               background: 'none',
               fontSize: '28px',
               cursor: 'pointer',
-              color: '#94a3b8',
             }}
           >
             ✕
@@ -981,8 +899,8 @@ function Modal({ title, children, onClose, isMobile }) {
 
 // --- STYLES ---
 const appContainer = {
-  padding: '15px',
-  backgroundColor: '#f8fafc',
+  padding: '20px',
+  backgroundColor: '#f3f4f6',
   minHeight: '100vh',
   fontFamily: 'sans-serif',
 };
@@ -992,32 +910,19 @@ const headerStyle = {
   alignItems: 'center',
   marginBottom: '20px',
   background: 'white',
-  padding: '15px 20px',
-  borderRadius: '18px',
-  boxShadow: '0 4px 6px rgba(0,0,0,0.05)',
+  padding: '20px',
+  borderRadius: '15px',
+  boxShadow: '0 2px 4px rgba(0,0,0,0.05)',
 };
 const headerMobile = {
-  ...headerStyle,
+  display: 'flex',
   flexDirection: 'column',
   gap: '15px',
+  marginBottom: '20px',
+  background: 'white',
+  padding: '20px',
+  borderRadius: '15px',
   textAlign: 'center',
-};
-const logoTitleS = {
-  margin: 0,
-  color: '#059669',
-  fontSize: '22px',
-  fontWeight: '800',
-};
-const logoCircleS = {
-  width: '45px',
-  height: '45px',
-  backgroundColor: '#ecfdf5',
-  borderRadius: '12px',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  border: '2px solid #059669',
-  fontSize: '24px',
 };
 const navButtons = {
   display: 'flex',
@@ -1025,75 +930,68 @@ const navButtons = {
   flexWrap: 'wrap',
   justifyContent: 'center',
 };
-const btnTodayActive = {
-  background: '#059669',
-  color: 'white',
-  border: 'none',
-  padding: '10px 18px',
-  borderRadius: '12px',
-  fontWeight: 'bold',
+const layoutGrid = {
+  display: 'grid',
+  gridTemplateColumns: window.innerWidth < 900 ? '1fr' : '1fr 280px',
+  gap: '20px',
 };
-const btnSec = {
-  background: '#f1f5f9',
-  color: '#475569',
-  border: 'none',
-  padding: '10px 18px',
-  borderRadius: '12px',
-  cursor: 'pointer',
-  fontWeight: 'bold',
+const sidePanel = {
+  background: 'white',
+  padding: '20px',
+  borderRadius: '15px',
+  height: 'fit-content',
+  boxShadow: '0 2px 4px rgba(0,0,0,0.05)',
 };
-const btnPrim = {
-  background: '#059669',
-  color: 'white',
-  border: 'none',
-  padding: '10px 18px',
-  borderRadius: '12px',
-  fontWeight: '800',
-  cursor: 'pointer',
+const sideRow = {
+  display: 'flex',
+  justifyContent: 'space-between',
+  padding: '10px 0',
+  borderBottom: '1px solid #f3f4f6',
 };
-const btnPrimSmall = { ...btnPrim, padding: '8px 16px', fontSize: '12px' };
-const btnDanger = {
-  background: '#fef2f2',
-  color: '#ef4444',
-  border: 'none',
-  padding: '10px 18px',
-  borderRadius: '12px',
+const grandTotalS = {
+  display: 'flex',
+  justifyContent: 'space-between',
+  marginTop: '15px',
+  padding: '10px',
+  background: '#f0fdf4',
+  borderRadius: '10px',
+  color: '#059669',
   fontWeight: 'bold',
 };
 const gridStyle = {
   display: 'grid',
-  gridTemplateColumns: '100px repeat(5, 1fr)',
+  gridTemplateColumns: '110px repeat(5, 1fr)',
   gap: '10px',
 };
-const layoutGrid = { display: 'grid', gridTemplateColumns: '1fr', gap: '20px' };
 const mobileStack = { display: 'flex', flexDirection: 'column', gap: '12px' };
 const dayCell = {
   background: 'white',
   padding: '12px',
-  borderRadius: '15px',
+  borderRadius: '12px',
   textAlign: 'center',
-  borderLeft: '6px solid #059669',
+  borderLeft: '5px solid #059669',
   fontWeight: 'bold',
-  boxShadow: '0 2px 4px rgba(0,0,0,0.05)',
 };
 const mobileDayLabel = {
   background: '#059669',
   color: 'white',
   padding: '12px',
-  borderRadius: '15px',
+  borderRadius: '12px',
+  textAlign: 'center',
   fontWeight: 'bold',
+  display: 'flex',
+  justifyContent: 'space-between',
 };
 const mealHeader = {
   textAlign: 'center',
-  fontWeight: '800',
-  color: '#94a3b8',
-  fontSize: '12px',
+  fontWeight: 'bold',
+  color: '#64748b',
 };
 const cellStyle = {
   minHeight: '110px',
   background: 'white',
-  borderRadius: '18px',
-  border: '1px solid #e2e8f0',
+  borderRadius: '12px',
+  border: '1px solid #e5e7eb',
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
@@ -1106,121 +1004,135 @@ const mealContent = {
   width: '100%',
   textAlign: 'center',
   padding: '10px',
-  background: 'rgba(255,255,255,0.85)',
-  borderRadius: '12px',
-  margin: '5px',
+  background: 'rgba(255,255,255,0.75)',
+  borderRadius: '8px',
 };
-const mealNameS = { fontWeight: '800', fontSize: '12px', color: '#1e293b' };
-const mealPriceS = { fontSize: '11px', color: '#059669', fontWeight: 'bold' };
+const mealNameS = { fontWeight: 'bold', fontSize: '13px' };
+const mealPriceS = { fontSize: '12px', color: '#059669', fontWeight: 'bold' };
 const btnViewSmall = {
   background: '#059669',
   color: 'white',
   border: 'none',
-  padding: '6px 10px',
-  borderRadius: '8px',
+  padding: '4px 8px',
+  borderRadius: '6px',
   fontSize: '10px',
-  fontWeight: 'bold',
   cursor: 'pointer',
+  marginTop: '5px',
 };
 const btnDelSmall = {
+  position: 'absolute',
+  top: '5px',
+  right: '5px',
   background: '#fee2e2',
   color: '#ef4444',
   border: 'none',
-  borderRadius: '8px',
-  width: '24px',
-  height: '24px',
-  fontSize: '12px',
+  borderRadius: '50%',
+  width: '22px',
+  height: '22px',
+  fontSize: '10px',
   cursor: 'pointer',
 };
 const shoppingPanel = {
   marginTop: '30px',
   background: 'white',
-  padding: '20px',
-  borderRadius: '22px',
-  boxShadow: '0 4px 6px rgba(0,0,0,0.05)',
+  padding: '25px',
+  borderRadius: '15px',
 };
 const shoppingGrid = {
   display: 'grid',
-  gridTemplateColumns:
-    window.innerWidth < 600 ? '1fr' : 'repeat(auto-fill, minmax(240px, 1fr))',
-  gap: '12px',
+  gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
+  gap: '15px',
 };
 const shoppingItem = {
-  padding: '16px',
-  borderRadius: '16px',
+  background: '#f9fafb',
+  padding: '12px',
+  borderRadius: '12px',
+  border: '1px solid #f3f4f6',
   display: 'flex',
   justifyContent: 'space-between',
   alignItems: 'center',
-  boxShadow: '0 2px 4px rgba(0,0,0,0.02)',
 };
 const inputS = {
   width: '100%',
-  padding: '12px',
-  marginBottom: '8px',
-  borderRadius: '12px',
-  border: '1px solid #e2e8f0',
+  padding: '10px',
+  marginBottom: '5px',
+  borderRadius: '10px',
+  border: '1px solid #d1d5db',
   boxSizing: 'border-box',
-  fontSize: '16px',
+};
+const btnPrim = {
+  background: '#059669',
+  color: 'white',
+  border: 'none',
+  padding: '10px 20px',
+  borderRadius: '10px',
+  fontWeight: 'bold',
+};
+const btnSec = {
+  background: '#f3f4f6',
+  color: '#374151',
+  border: 'none',
+  padding: '10px 20px',
+  borderRadius: '10px',
+};
+const btnTodayActive = {
+  ...btnSec,
+  background: '#059669',
+  color: 'white',
+  boxShadow: '0 0 10px rgba(5, 150, 105, 0.4)',
 };
 const btnSuccessFull = {
   background: '#059669',
   color: 'white',
   border: 'none',
-  padding: '15px',
-  borderRadius: '15px',
+  padding: '14px',
+  borderRadius: '12px',
   width: '100%',
   cursor: 'pointer',
-  fontWeight: '800',
-  fontSize: '16px',
+  fontWeight: 'bold',
   marginTop: '10px',
 };
 const btnFilter = {
-  background: '#f1f5f9',
-  color: '#64748b',
+  background: '#f3f4f6',
+  color: '#6b7280',
   border: 'none',
   padding: '8px 16px',
-  borderRadius: '12px',
+  borderRadius: '20px',
   cursor: 'pointer',
-  fontWeight: 'bold',
 };
 const btnFilterActive = { ...btnFilter, background: '#059669', color: 'white' };
 const filterBar = {
   display: 'flex',
-  gap: '8px',
+  gap: '5px',
   marginBottom: '15px',
   overflowX: 'auto',
 };
 const productRowS = {
   display: 'flex',
   justifyContent: 'space-between',
-  padding: '15px',
-  borderBottom: '1px solid #f1f5f9',
+  padding: '10px',
+  borderBottom: '1px solid #f3f4f6',
   alignItems: 'center',
+  cursor: 'pointer',
 };
 const recipeListItem = {
   padding: '15px',
-  borderBottom: '1px solid #f1f5f9',
+  borderBottom: '1px solid #f3f4f6',
   cursor: 'pointer',
   display: 'flex',
   justifyContent: 'space-between',
-  alignItems: 'center',
 };
 const searchResultsS = {
   background: 'white',
-  border: '1px solid #e2e8f0',
-  borderRadius: '12px',
+  border: '1px solid #e5e7eb',
+  borderRadius: '10px',
   marginBottom: '15px',
-};
-const searchItemS = {
-  padding: '12px',
-  cursor: 'pointer',
-  borderBottom: '1px solid #f1f5f9',
 };
 const iconBtn = {
   border: 'none',
   background: 'none',
   cursor: 'pointer',
-  fontSize: '22px',
+  fontSize: '18px',
 };
 const overlayS = {
   position: 'fixed',
@@ -1228,12 +1140,17 @@ const overlayS = {
   left: 0,
   width: '100%',
   height: '100%',
-  background: 'rgba(15, 23, 42, 0.6)',
-  backdropFilter: 'blur(4px)',
+  background: 'rgba(0,0,0,0.4)',
   display: 'flex',
   justifyContent: 'center',
   alignItems: 'center',
   zIndex: 1000,
+};
+const modalS = {
+  background: 'white',
+  borderRadius: '20px',
+  boxShadow: '0 20px 50px rgba(0,0,0,0.15)',
+  position: 'relative',
 };
 const loginOverlay = {
   height: '100vh',
@@ -1245,8 +1162,8 @@ const loginOverlay = {
 const loginForm = {
   background: 'white',
   padding: '40px',
-  borderRadius: '30px',
-  width: '340px',
+  borderRadius: '25px',
+  width: '320px',
 };
 const loadingStyle = {
   display: 'flex',
@@ -1254,58 +1171,41 @@ const loadingStyle = {
   alignItems: 'center',
   height: '100vh',
   color: '#059669',
-  fontSize: '22px',
+  fontSize: '20px',
   fontWeight: 'bold',
+};
+const logoCircleS = {
+  width: '40px',
+  height: '40px',
+  backgroundColor: '#ecfdf5',
+  borderRadius: '10px',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  fontSize: '20px',
+  border: '2px solid #059669',
 };
 const mobileMealTag = {
   position: 'absolute',
-  top: '6px',
-  left: '10px',
+  top: '5px',
+  left: '8px',
   fontSize: '9px',
   color: '#94a3b8',
   fontWeight: 'bold',
-  textTransform: 'uppercase',
 };
 const formBoxS = {
-  background: '#f8fafc',
-  padding: '18px',
-  borderRadius: '20px',
+  background: '#f9fafb',
+  padding: '15px',
+  borderRadius: '15px',
   marginBottom: '20px',
-  border: '1px solid #e2e8f0',
+  border: '1px solid #e5e7eb',
 };
 const stepItemS = {
   padding: '15px',
   background: '#f0fdf4',
-  borderRadius: '15px',
-  borderLeft: '5px solid #059669',
-  marginBottom: '12px',
-  display: 'flex',
-  gap: '15px',
-  alignItems: 'center',
-};
-const stepCircleS = {
-  width: '28px',
-  height: '28px',
-  background: '#059669',
-  color: 'white',
-  borderRadius: '50%',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  fontWeight: 'bold',
-  flexShrink: 0,
-};
-const fileLabelS = {
-  display: 'block',
-  padding: '15px',
-  background: '#f1f5f9',
-  border: '2px dashed #cbd5e1',
-  borderRadius: '12px',
-  textAlign: 'center',
-  cursor: 'pointer',
-  color: '#475569',
-  fontWeight: 'bold',
-  fontSize: '14px',
+  borderRadius: '10px',
+  borderLeft: '4px solid #059669',
+  marginBottom: '10px',
 };
 const btnCartAddSmall = {
   background: '#e0f2fe',
@@ -1316,4 +1216,11 @@ const btnCartAddSmall = {
   fontSize: '11px',
   fontWeight: 'bold',
   cursor: 'pointer',
+};
+const btnDanger = {
+  background: '#ef4444',
+  color: 'white',
+  border: 'none',
+  padding: '10px 20px',
+  borderRadius: '10px',
 };
