@@ -1,41 +1,41 @@
-name: Deploy Jedzonko Planer
-
+name: Deploy Planer
 on:
   push:
-    branches:
-      - main  # Sprawdź czy Twoja gałąź to 'main' czy 'master'
-
+    branches: [main]
 permissions:
-  contents: write
-
+  contents: read
+  pages: write
+  id-token: write
 jobs:
-  build-and-deploy:
+  build:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
 
-      - name: Install dependencies
-        run: npm install
+      - run: npm install
 
-      # DODAJ TĘ LINIĘ: Wymuszenie uprawnień dla Vite
-      - name: Fix permissions
-        run: chmod +x node_modules/.bin/vite
-
-      - name: Build project
-        run: npm run build
+      - run: npm run build
         env:
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
 
-      - name: Deploy to GitHub Pages
-        uses: JamesIves/github-pages-deploy-action@v4
+      - uses: actions/upload-pages-artifact@v3
         with:
-          folder: dist # Folder, w którym Vite generuje gotową stronę
-          branch: gh-pages # Gałąź, na której GitHub trzyma pliki strony
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
