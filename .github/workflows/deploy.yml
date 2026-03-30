@@ -24,10 +24,13 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      # DODAJ TĘ LINIĘ: Wymuszenie uprawnień dla Vite
+      - name: Fix permissions
+        run: chmod +x node_modules/.bin/vite
+
       - name: Build project
         run: npm run build
         env:
-          # GitHub musi znać te zmienne, aby build się udał
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
 
