@@ -1,13 +1,13 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { createClient } from '@supabase/supabase-js';
 
-//const supabase = createClient(
-//  import.meta.env.VITE_SUPABASE_URL || '',
-//  import.meta.env.VITE_SUPABASE_ANON_KEY || ''
-//);
-const SUPABASE_URL = 'TWÓJ_URL';
-const SUPABASE_ANON_KEY = 'TWÓJ_KLUCZ';
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const supabase = createClient(
+  import.meta.env.VITE_SUPABASE_URL || '',
+  import.meta.env.VITE_SUPABASE_ANON_KEY || ''
+);
+// const SUPABASE_URL = 'TWÓJ_URL';
+// const SUPABASE_ANON_KEY = 'TWÓJ_KLUCZ';
+// const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 const MEAL_TYPES = ['Śniadanie', 'Lunch', 'Obiad', 'Podwieczorek', 'Kolacja'];
 const DAYS = [
