@@ -9,7 +9,8 @@ import { createClient } from '@supabase/supabase-js';
 
 const supabase = createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY);
 
-const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY || '';
+// Klucz do Google Gemini AI
+const GEMINI_API_KEY = (import.meta.env.VITE_GEMINI_API_KEY || '').trim();
 
 const MEAL_TYPES = ['Śniadanie', 'Lunch', 'Obiad', 'Podwieczorek', 'Kolacja'];
 const DAYS = [
@@ -117,7 +118,7 @@ export default function App() {
   const [viewMode, setViewMode] = useState('desc');
   const [filterCategory, setFilterCategory] = useState('');
   const [recipeListCategory, setRecipeListCategory] = useState('');
-  const [statTab, setStatTab] = useState('summary'); // Zakładki w statystykach
+  const [statTab, setStatTab] = useState('summary');
 
   const [cookingStep, setCookingStep] = useState(0);
   const [isVoiceActive, setIsVoiceActive] = useState(false);
@@ -152,6 +153,16 @@ export default function App() {
   const handleLogout = useCallback(() => supabase.auth.signOut(), []);
 
   useEffect(() => {
+    document.title = 'Jedzonko Planer 🥗';
+    const existingFavicons = document.querySelectorAll("link[rel*='icon']");
+    existingFavicons.forEach((el) => el.remove());
+
+    const link = document.createElement('link');
+    link.rel = 'icon';
+    link.href =
+      'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y=".9em" font-size="90">🥗</text></svg>';
+    document.head.appendChild(link);
+
     const handleResize = () => {
       setIsMobile(window.innerWidth < 900);
       setIsLandscape(window.innerWidth > window.innerHeight);
@@ -292,7 +303,6 @@ export default function App() {
     });
   }, [weekOffset]);
 
-  // --- ROZBUDOWANA LOGIKA STATYSTYK ---
   const advancedStats = useMemo(() => {
     const monthlySpending = {};
     const ingredientStats = {};
@@ -305,7 +315,6 @@ export default function App() {
     };
     let currentMonthCost = 0;
 
-    // Ustalanie etykiety dla obecnego miesiąca
     const currentMonthLabel = new Date().toLocaleDateString('pl-PL', {
       month: 'long',
       year: 'numeric',
@@ -350,7 +359,6 @@ export default function App() {
     const maxMealType = Math.max(0, ...Object.values(mealTypeCosts));
     const maxIngCost = topByCost.length > 0 ? topByCost[0][1].totalCost : 0;
 
-    // Obliczanie unikalnych dni z zaplanowanymi posiłkami
     const uniqueDays = new Set(mealPlan.map((m) => m.date)).size;
     const avgDailyCost =
       uniqueDays > 0 ? (currentMonthCost / uniqueDays).toFixed(2) : 0;
@@ -440,8 +448,21 @@ export default function App() {
 
   const processAiResponse = (data) => {
     if (data.error) throw new Error(data.error.message);
+    if (!data.candidates || data.candidates.length === 0) {
+      throw new Error('Odpowiedź od AI jest pusta.');
+    }
 
-    const jsonText = data.candidates[0].content.parts[0].text;
+    let jsonText = data.candidates[0].content.parts[0].text;
+
+    // Solidne poszukiwanie obiektu JSON w odpowiedźi AI
+    const firstBrace = jsonText.indexOf('{');
+    const lastBrace = jsonText.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace !== -1) {
+      jsonText = jsonText.substring(firstBrace, lastBrace + 1);
+    } else {
+      throw new Error('AI nie zwróciło poprawnego formatu JSON.');
+    }
+
     const aiRecipe = JSON.parse(jsonText);
 
     const mappedIngredients = (aiRecipe.ingredients || []).map((aiIng) => {
@@ -468,9 +489,9 @@ export default function App() {
 
     setNewRecipe((prev) => ({
       ...prev,
-      name: aiRecipe.name || prev.name,
-      instructions: aiRecipe.instructions || prev.instructions,
-      steps: aiRecipe.steps || prev.steps,
+      name: aiRecipe.name || prev.name || '',
+      instructions: aiRecipe.instructions || prev.instructions || '',
+      steps: aiRecipe.steps || prev.steps || [],
       ingredients: [...prev.ingredients, ...mappedIngredients],
     }));
   };
@@ -479,60 +500,73 @@ export default function App() {
     const file = e.target.files[0];
     if (!file) return;
     if (!GEMINI_API_KEY) {
-      alert('Brak klucza API! Dodaj VITE_GEMINI_API_KEY do pliku .env');
+      alert(
+        'Brak klucza API! Dodaj VITE_GEMINI_API_KEY do GitHub Secrets i przebuduj apkę.'
+      );
       return;
     }
 
     setIsAiLoading(true);
     try {
-      const reader = new FileReader();
-      reader.readAsDataURL(file);
-      reader.onloadend = async () => {
-        const base64data = reader.result.split(',')[1];
-        const prompt = `Jesteś ekspertem kulinarnym. Przeanalizuj załączone zdjęcie przepisu. Zwróć odpowiedź TYLKO I WYŁĄCZNIE jako poprawny obiekt JSON. Format:
+      const base64data = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result.split(',')[1]);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+
+      const prompt = `Jesteś ekspertem kulinarnym. Przeanalizuj załączone zdjęcie przepisu. Zwróć odpowiedź TYLKO I WYŁĄCZNIE jako poprawny obiekt JSON. Format:
+      {
+        "name": "Nazwa dania",
+        "instructions": "Krótki opis, wstęp lub notatki do przepisu",
+        "steps": ["krok 1", "krok 2", "krok 3"],
+        "ingredients": [
+          {"name": "Składnik 1", "amount": 100, "unit": "g"}
+        ]
+      }`;
+
+      // ZMIENIONY MODEL NA gemini-3.0-flash-preview
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${GEMINI_API_KEY}`,
         {
-          "name": "Nazwa dania",
-          "instructions": "Krótki opis, wstęp lub notatki do przepisu",
-          "steps": ["krok 1", "krok 2", "krok 3"],
-          "ingredients": [
-            {"name": "Składnik 1", "amount": 100, "unit": "g"}
-          ]
-        }`;
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [
+              {
+                parts: [
+                  { text: prompt },
+                  { inlineData: { mimeType: file.type, data: base64data } },
+                ],
+              },
+            ],
+            generationConfig: { responseMimeType: 'application/json' },
+          }),
+        }
+      );
 
-        const response = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              contents: [
-                {
-                  parts: [
-                    { text: prompt },
-                    { inlineData: { mimeType: file.type, data: base64data } },
-                  ],
-                },
-              ],
-              generationConfig: { responseMimeType: 'application/json' },
-            }),
-          }
-        );
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`Błąd API: ${response.status} - ${errText}`);
+      }
 
-        const data = await response.json();
-        processAiResponse(data);
-        setIsAiLoading(false);
-      };
+      const data = await response.json();
+      processAiResponse(data);
     } catch (err) {
-      console.error(err);
-      alert('Wystąpił błąd podczas analizy zdjęcia.');
+      console.error('Błąd parsowania lub API:', err);
+      alert(`Wystąpił błąd podczas analizy zdjęcia:\n${err.message}`);
+    } finally {
       setIsAiLoading(false);
+      setShowAiPanel(false);
     }
   };
 
   const handleAiRecipeFromUrl = async () => {
     if (!aiUrl) return;
     if (!GEMINI_API_KEY) {
-      alert('Brak klucza API! Dodaj VITE_GEMINI_API_KEY do pliku .env');
+      alert(
+        'Brak klucza API! Dodaj VITE_GEMINI_API_KEY do GitHub Secrets i przebuduj apkę.'
+      );
       return;
     }
 
@@ -548,8 +582,9 @@ export default function App() {
         ]
       }`;
 
+      // ZMIENIONY MODEL NA gemini-3.0-flash-preview
       const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.0-flash-preview:generateContent?key=${GEMINI_API_KEY}`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -560,15 +595,18 @@ export default function App() {
         }
       );
 
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`Błąd API: ${response.status} - ${errText}`);
+      }
+
       const data = await response.json();
       processAiResponse(data);
       setAiUrl('');
       setShowAiPanel(false);
     } catch (err) {
-      console.error(err);
-      alert(
-        'Wystąpił błąd podczas analizy linku. Możliwe, że strona blokuje boty. Spróbuj użyć zdjęcia.'
-      );
+      console.error('Błąd parsowania lub API:', err);
+      alert(`Wystąpił błąd podczas analizy linku:\n${err.message}`);
     } finally {
       setIsAiLoading(false);
     }
@@ -838,7 +876,7 @@ export default function App() {
                             onClick={(e) => {
                               e.stopPropagation();
                               setViewingRecipe(m.recipes);
-                              setViewMode('steps');
+                              setViewMode('desc');
                               setActiveModal('view-recipe');
                             }}
                           >
@@ -1047,7 +1085,6 @@ export default function App() {
           isMobile={isMobile}
           isLandscape={isLandscape}
         >
-          {/* ZAKŁADKI STATYSTYK */}
           <div
             style={{
               display: 'flex',
@@ -1085,7 +1122,6 @@ export default function App() {
               paddingRight: '5px',
             }}
           >
-            {/* ZAKŁADKA 1: PODSUMOWANIE */}
             {statTab === 'summary' && (
               <>
                 <div
@@ -1162,7 +1198,6 @@ export default function App() {
               </>
             )}
 
-            {/* ZAKŁADKA 2: WYDATKI */}
             {statTab === 'expenses' && (
               <>
                 <div style={statBoxS}>
@@ -1260,7 +1295,6 @@ export default function App() {
               </>
             )}
 
-            {/* ZAKŁADKA 3: PRODUKTY */}
             {statTab === 'products' && (
               <>
                 <div style={statBoxS}>
@@ -2809,7 +2843,6 @@ const cookingCardS = {
   flexDirection: 'column',
 };
 
-// --- NOWE STYLE DO ZAKŁADEK W STATYSTYKACH ---
 const statTabBtn = {
   background: 'transparent',
   color: '#64748b',
