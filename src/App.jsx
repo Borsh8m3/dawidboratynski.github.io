@@ -1,7 +1,3 @@
-// const SUPABASE_URL = 'TWÓJ_URL';
-// const SUPABASE_ANON_KEY = 'TWÓJ_KLUCZ';
-// const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-
 import React, {
   useState,
   useEffect,
@@ -13,6 +9,7 @@ import { createClient } from '@supabase/supabase-js';
 
 const supabase = createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY);
 
+const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY || '';
 
 const MEAL_TYPES = ['Śniadanie', 'Lunch', 'Obiad', 'Podwieczorek', 'Kolacja'];
 const DAYS = [
@@ -34,6 +31,70 @@ const MEAL_COLORS = {
   Kolacja: sharedGradient,
 };
 
+const renderStepWithIngredients = (text, ingredients) => {
+  if (!text || !ingredients || ingredients.length === 0) return text;
+  let parts = [{ text: text, isIng: false }];
+
+  ingredients.forEach((ri) => {
+    const name = ri.products?.name || ri.name;
+    if (!name) return;
+
+    const words = name.split(' ').filter((w) => w.length > 2);
+    const searchWord = words.length > 0 ? words[0] : name;
+
+    const minLen = Math.max(3, searchWord.length - 2);
+    const stem = searchWord.toLowerCase().substring(0, minLen);
+    const safeStem = stem.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+
+    const newParts = [];
+    parts.forEach((part) => {
+      if (part.isIng) {
+        newParts.push(part);
+        return;
+      }
+      const regex = new RegExp(`(${safeStem}[a-ząćęłńóśźż]*)`, 'gi');
+      const splits = part.text.split(regex);
+
+      splits.forEach((s) => {
+        if (!s) return;
+        if (s.toLowerCase().startsWith(stem)) {
+          const displayUnit = ri.products?.unit || ri.unit || '';
+          newParts.push({
+            text: s,
+            isIng: true,
+            ri: { amount: ri.amount, unit: displayUnit },
+          });
+        } else {
+          newParts.push({ text: s, isIng: false });
+        }
+      });
+    });
+    parts = newParts;
+  });
+
+  return parts.map((p, i) => {
+    if (p.isIng) {
+      return (
+        <span
+          key={i}
+          style={{
+            color: '#059669',
+            fontWeight: '800',
+            backgroundColor: '#ecfdf5',
+            padding: '2px 6px',
+            borderRadius: '6px',
+            whiteSpace: 'nowrap',
+            border: '1px solid #a7f3d0',
+          }}
+        >
+          {p.text} ({p.ri.amount} {p.ri.unit})
+        </span>
+      );
+    }
+    return <span key={i}>{p.text}</span>;
+  });
+};
+
 export default function App() {
   const [session, setSession] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -41,7 +102,12 @@ export default function App() {
   const [recipes, setRecipes] = useState([]);
   const [mealPlan, setMealPlan] = useState([]);
   const [weekOffset, setWeekOffset] = useState(0);
+
   const [isMobile, setIsMobile] = useState(window.innerWidth < 900);
+  const [isLandscape, setIsLandscape] = useState(
+    window.innerWidth > window.innerHeight
+  );
+
   const [manualCart, setManualCart] = useState([]);
   const [checkedItems, setCheckedItems] = useState({});
 
@@ -51,12 +117,18 @@ export default function App() {
   const [viewMode, setViewMode] = useState('desc');
   const [filterCategory, setFilterCategory] = useState('');
   const [recipeListCategory, setRecipeListCategory] = useState('');
+  const [statTab, setStatTab] = useState('summary'); // Zakładki w statystykach
 
-  // --- STANY DLA TRYBU GOTOWANIA ---
   const [cookingStep, setCookingStep] = useState(0);
   const [isVoiceActive, setIsVoiceActive] = useState(false);
+  const [lastHeard, setLastHeard] = useState('');
   const recognitionRef = useRef(null);
   const isVoiceActiveRef = useRef(isVoiceActive);
+  const stepsLengthRef = useRef(0);
+
+  const [isAiLoading, setIsAiLoading] = useState(false);
+  const [showAiPanel, setShowAiPanel] = useState(false);
+  const [aiUrl, setAiUrl] = useState('');
 
   const [newProd, setNewProd] = useState({
     id: null,
@@ -80,7 +152,10 @@ export default function App() {
   const handleLogout = useCallback(() => supabase.auth.signOut(), []);
 
   useEffect(() => {
-    const handleResize = () => setIsMobile(window.innerWidth < 900);
+    const handleResize = () => {
+      setIsMobile(window.innerWidth < 900);
+      setIsLandscape(window.innerWidth > window.innerHeight);
+    };
     window.addEventListener('resize', handleResize);
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
@@ -101,32 +176,38 @@ export default function App() {
     if (session) fetchData();
   }, [session, weekOffset]);
 
-  // --- INICJALIZACJA ROZPOZNAWANIA MOWY ---
+  useEffect(() => {
+    if (viewingRecipe?.steps) {
+      stepsLengthRef.current = viewingRecipe.steps.length;
+    } else {
+      stepsLengthRef.current = 0;
+    }
+  }, [viewingRecipe]);
+
   useEffect(() => {
     const SpeechRecognition =
       window.SpeechRecognition || window.webkitSpeechRecognition;
     if (SpeechRecognition) {
       const recognition = new SpeechRecognition();
       recognition.lang = 'pl-PL';
-      recognition.continuous = false; // Lepsze rezultaty przy restarcie na onend
+      recognition.continuous = true;
       recognition.interimResults = false;
 
       recognition.onresult = (event) => {
-        const transcript = event.results[0][0].transcript.toLowerCase().trim();
-        console.log('Słyszę:', transcript);
+        const currentIdx = event.resultIndex;
+        const transcript = event.results[currentIdx][0].transcript
+          .toLowerCase()
+          .trim();
+        setLastHeard(transcript);
 
         if (
           transcript.includes('dalej') ||
           transcript.includes('następny') ||
-          transcript.includes('kolejna') ||
-          transcript.includes('kolejny')
+          transcript.includes('kolejn')
         ) {
-          setCookingStep((prev) => {
-            const max = viewingRecipe?.steps?.length
-              ? viewingRecipe.steps.length - 1
-              : 0;
-            return Math.min(prev + 1, max);
-          });
+          setCookingStep((prev) =>
+            Math.min(prev + 1, Math.max(0, stepsLengthRef.current - 1))
+          );
         } else if (
           transcript.includes('wstecz') ||
           transcript.includes('poprzedni') ||
@@ -144,35 +225,37 @@ export default function App() {
         }
       };
 
+      recognition.onerror = (event) => {
+        console.error('Błąd rozpoznawania:', event.error);
+        if (event.error === 'not-allowed') setIsVoiceActive(false);
+      };
+
       recognition.onend = () => {
         if (isVoiceActiveRef.current) {
           try {
             recognition.start();
-          } catch (e) {
-            console.error(e);
-          }
+          } catch (e) {}
         }
       };
 
       recognitionRef.current = recognition;
     }
-  }, [viewingRecipe]); // Zależy od viewingRecipe, żeby znać długość tablicy steps
 
-  // Kontrola nasłuchiwania przy zmianie stanu isVoiceActive
+    return () => {
+      if (recognitionRef.current) recognitionRef.current.stop();
+    };
+  }, []);
+
   useEffect(() => {
     isVoiceActiveRef.current = isVoiceActive;
     if (isVoiceActive && recognitionRef.current) {
+      setLastHeard('');
       try {
         recognitionRef.current.start();
       } catch (e) {}
     } else if (!isVoiceActive && recognitionRef.current) {
       recognitionRef.current.stop();
     }
-
-    // Sprzątanie po zamknięciu
-    return () => {
-      if (recognitionRef.current) recognitionRef.current.stop();
-    };
   }, [isVoiceActive]);
 
   async function fetchData() {
@@ -209,19 +292,43 @@ export default function App() {
     });
   }, [weekOffset]);
 
+  // --- ROZBUDOWANA LOGIKA STATYSTYK ---
   const advancedStats = useMemo(() => {
     const monthlySpending = {};
     const ingredientStats = {};
+    const mealTypeCosts = {
+      Śniadanie: 0,
+      Lunch: 0,
+      Obiad: 0,
+      Podwieczorek: 0,
+      Kolacja: 0,
+    };
+    let currentMonthCost = 0;
+
+    // Ustalanie etykiety dla obecnego miesiąca
+    const currentMonthLabel = new Date().toLocaleDateString('pl-PL', {
+      month: 'long',
+      year: 'numeric',
+    });
+
     mealPlan.forEach((meal) => {
       const recipe = recipes.find((r) => r.id === meal.recipe_id);
       if (!recipe) return;
+      const cost = parseFloat(recipe.total_cost || 0);
+
       const dateObj = new Date(meal.date);
       const monthLabel = dateObj.toLocaleDateString('pl-PL', {
         month: 'long',
         year: 'numeric',
       });
-      monthlySpending[monthLabel] =
-        (monthlySpending[monthLabel] || 0) + parseFloat(recipe.total_cost);
+
+      monthlySpending[monthLabel] = (monthlySpending[monthLabel] || 0) + cost;
+      if (monthLabel === currentMonthLabel) currentMonthCost += cost;
+
+      if (mealTypeCosts[meal.meal_type] !== undefined) {
+        mealTypeCosts[meal.meal_type] += cost;
+      }
+
       recipe.recipe_ingredients?.forEach((ri) => {
         const p = ri.products;
         if (!p) return;
@@ -231,14 +338,35 @@ export default function App() {
         ingredientStats[p.name].totalCost += p.price_per_unit * ri.amount;
       });
     });
+
+    const topByCount = Object.entries(ingredientStats)
+      .sort((a, b) => b[1].count - a[1].count)
+      .slice(0, 5);
+    const topByCost = Object.entries(ingredientStats)
+      .sort((a, b) => b[1].totalCost - a[1].totalCost)
+      .slice(0, 6);
+
+    const maxMonthly = Math.max(0, ...Object.values(monthlySpending));
+    const maxMealType = Math.max(0, ...Object.values(mealTypeCosts));
+    const maxIngCost = topByCost.length > 0 ? topByCost[0][1].totalCost : 0;
+
+    // Obliczanie unikalnych dni z zaplanowanymi posiłkami
+    const uniqueDays = new Set(mealPlan.map((m) => m.date)).size;
+    const avgDailyCost =
+      uniqueDays > 0 ? (currentMonthCost / uniqueDays).toFixed(2) : 0;
+
     return {
       monthly: Object.entries(monthlySpending).reverse(),
-      topByCount: Object.entries(ingredientStats)
-        .sort((a, b) => b[1].count - a[1].count)
-        .slice(0, 5),
-      topByCost: Object.entries(ingredientStats)
-        .sort((a, b) => b[1].totalCost - a[1].totalCost)
-        .slice(0, 5),
+      topByCount,
+      topByCost,
+      mealTypeCosts: Object.entries(mealTypeCosts).sort((a, b) => b[1] - a[1]),
+      currentMonthLabel,
+      currentMonthCost: currentMonthCost.toFixed(2),
+      avgDailyCost,
+      plannedMealsCount: mealPlan.length,
+      maxMonthly,
+      maxMealType,
+      maxIngCost,
     };
   }, [mealPlan, recipes]);
 
@@ -310,14 +438,153 @@ export default function App() {
     }
   };
 
+  const processAiResponse = (data) => {
+    if (data.error) throw new Error(data.error.message);
+
+    const jsonText = data.candidates[0].content.parts[0].text;
+    const aiRecipe = JSON.parse(jsonText);
+
+    const mappedIngredients = (aiRecipe.ingredients || []).map((aiIng) => {
+      const foundDbProduct = products.find(
+        (p) =>
+          p.name.toLowerCase().includes(aiIng.name.toLowerCase()) ||
+          aiIng.name.toLowerCase().includes(p.name.toLowerCase())
+      );
+
+      if (foundDbProduct) {
+        return {
+          ...foundDbProduct,
+          amount: aiIng.amount || 100,
+          unit: aiIng.unit || foundDbProduct.unit,
+        };
+      }
+      return {
+        id: null,
+        name: `⚠️ ${aiIng.name} - brak w bazie`,
+        amount: aiIng.amount || 100,
+        unit: aiIng.unit || 'g',
+      };
+    });
+
+    setNewRecipe((prev) => ({
+      ...prev,
+      name: aiRecipe.name || prev.name,
+      instructions: aiRecipe.instructions || prev.instructions,
+      steps: aiRecipe.steps || prev.steps,
+      ingredients: [...prev.ingredients, ...mappedIngredients],
+    }));
+  };
+
+  const handleAiRecipeScan = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (!GEMINI_API_KEY) {
+      alert('Brak klucza API! Dodaj VITE_GEMINI_API_KEY do pliku .env');
+      return;
+    }
+
+    setIsAiLoading(true);
+    try {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onloadend = async () => {
+        const base64data = reader.result.split(',')[1];
+        const prompt = `Jesteś ekspertem kulinarnym. Przeanalizuj załączone zdjęcie przepisu. Zwróć odpowiedź TYLKO I WYŁĄCZNIE jako poprawny obiekt JSON. Format:
+        {
+          "name": "Nazwa dania",
+          "instructions": "Krótki opis, wstęp lub notatki do przepisu",
+          "steps": ["krok 1", "krok 2", "krok 3"],
+          "ingredients": [
+            {"name": "Składnik 1", "amount": 100, "unit": "g"}
+          ]
+        }`;
+
+        const response = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contents: [
+                {
+                  parts: [
+                    { text: prompt },
+                    { inlineData: { mimeType: file.type, data: base64data } },
+                  ],
+                },
+              ],
+              generationConfig: { responseMimeType: 'application/json' },
+            }),
+          }
+        );
+
+        const data = await response.json();
+        processAiResponse(data);
+        setIsAiLoading(false);
+      };
+    } catch (err) {
+      console.error(err);
+      alert('Wystąpił błąd podczas analizy zdjęcia.');
+      setIsAiLoading(false);
+    }
+  };
+
+  const handleAiRecipeFromUrl = async () => {
+    if (!aiUrl) return;
+    if (!GEMINI_API_KEY) {
+      alert('Brak klucza API! Dodaj VITE_GEMINI_API_KEY do pliku .env');
+      return;
+    }
+
+    setIsAiLoading(true);
+    try {
+      const prompt = `Jesteś ekspertem kulinarnym. Przeczytaj i przeanalizuj przepis znajdujący się na podanej stronie internetowej: ${aiUrl}. Zwróć odpowiedź TYLKO I WYŁĄCZNIE jako poprawny obiekt JSON. Format:
+      {
+        "name": "Nazwa dania",
+        "instructions": "Krótki opis, wstęp lub notatki do przepisu",
+        "steps": ["krok 1", "krok 2", "krok 3"],
+        "ingredients": [
+          {"name": "Składnik 1", "amount": 100, "unit": "g"}
+        ]
+      }`;
+
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: { responseMimeType: 'application/json' },
+          }),
+        }
+      );
+
+      const data = await response.json();
+      processAiResponse(data);
+      setAiUrl('');
+      setShowAiPanel(false);
+    } catch (err) {
+      console.error(err);
+      alert(
+        'Wystąpił błąd podczas analizy linku. Możliwe, że strona blokuje boty. Spróbuj użyć zdjęcia.'
+      );
+    } finally {
+      setIsAiLoading(false);
+    }
+  };
+
   const handleSaveRecipe = async () => {
     if (!newRecipe.name) return;
+
+    const validIngredients = newRecipe.ingredients.filter(
+      (ing) => ing.id || ing.product_id
+    );
     const calc = (ing) =>
       parseFloat(ing.price_per_unit || ing.products?.price_per_unit || 0) *
       parseFloat(ing.amount || 0);
-    const tCost = newRecipe.ingredients
-      .reduce((s, i) => s + calc(i), 0)
-      .toFixed(2);
+    const tCost = validIngredients.reduce((s, i) => s + calc(i), 0).toFixed(2);
+
     const rData = {
       name: newRecipe.name,
       category: newRecipe.category,
@@ -327,6 +594,7 @@ export default function App() {
       image_url: newRecipe.image_url,
       is_favorite: newRecipe.is_favorite,
     };
+
     let rId = newRecipe.id;
     if (newRecipe.id) {
       await supabase.from('recipes').update(rData).eq('id', newRecipe.id);
@@ -342,12 +610,14 @@ export default function App() {
         .single();
       rId = data.id;
     }
-    const ings = newRecipe.ingredients.map((ing) => ({
+
+    const ings = validIngredients.map((ing) => ({
       recipe_id: rId,
       product_id: ing.id || ing.product_id,
       amount: ing.amount,
     }));
     await supabase.from('recipe_ingredients').insert(ings);
+
     setNewRecipe({
       id: null,
       name: '',
@@ -406,22 +676,6 @@ export default function App() {
     fetchData();
   };
 
-  // --- FUNKCJA SZUKAJĄCA SKŁADNIKÓW W TEKŚCIE KROKU ---
-  const getIngredientsForStep = (stepText, recipeIngredients) => {
-    if (!stepText || !recipeIngredients) return [];
-    const textLower = stepText.toLowerCase();
-
-    return recipeIngredients.filter((ri) => {
-      const pName = ri.products?.name;
-      if (!pName) return false;
-      // Szukamy rdzenia słowa (odrzucamy 2 ostatnie litery żeby złapać odmiany np. Cebulę -> Cebula)
-      // Zabezpieczamy krótkie słowa (np. Sól)
-      const minLength = Math.max(3, pName.length - 2);
-      const stem = pName.toLowerCase().substring(0, minLength);
-      return textLower.includes(stem);
-    });
-  };
-
   if (loading) return <div style={loadingStyle}>🍳 Ładowanie...</div>;
   if (!session) return <LoginView />;
 
@@ -450,7 +704,13 @@ export default function App() {
           <button onClick={() => setWeekOffset((p) => p + 1)} style={btnSec}>
             ➡
           </button>
-          <button onClick={() => setActiveModal('stats')} style={btnStats}>
+          <button
+            onClick={() => {
+              setStatTab('summary');
+              setActiveModal('stats');
+            }}
+            style={btnStats}
+          >
             📈 Statystyki
           </button>
           <button onClick={() => setActiveModal('product')} style={btnSec}>
@@ -578,7 +838,7 @@ export default function App() {
                             onClick={(e) => {
                               e.stopPropagation();
                               setViewingRecipe(m.recipes);
-                              setViewMode('steps'); // Od razu otwieramy na krokach
+                              setViewMode('steps');
                               setActiveModal('view-recipe');
                             }}
                           >
@@ -785,37 +1045,301 @@ export default function App() {
           title="📈 Twoje Statystyki"
           onClose={() => setActiveModal(null)}
           isMobile={isMobile}
+          isLandscape={isLandscape}
         >
-          <div style={{ maxHeight: '70vh', overflowY: 'auto' }}>
-            <div style={statBoxS}>
-              <h4 style={statLabelS}>💳 Wydatki miesięczne</h4>
-              {advancedStats.monthly.map(([label, total]) => (
-                <div key={label} style={statRowS}>
-                  <span>{label}</span>
-                  <b style={{ color: '#059669' }}>{total.toFixed(2)} zł</b>
+          {/* ZAKŁADKI STATYSTYK */}
+          <div
+            style={{
+              display: 'flex',
+              gap: '8px',
+              marginBottom: '20px',
+              borderBottom: '2px solid #f1f5f9',
+              paddingBottom: '10px',
+              overflowX: 'auto',
+            }}
+          >
+            <button
+              style={statTab === 'summary' ? statTabActive : statTabBtn}
+              onClick={() => setStatTab('summary')}
+            >
+              📊 Podsumowanie
+            </button>
+            <button
+              style={statTab === 'expenses' ? statTabActive : statTabBtn}
+              onClick={() => setStatTab('expenses')}
+            >
+              💸 Wydatki
+            </button>
+            <button
+              style={statTab === 'products' ? statTabActive : statTabBtn}
+              onClick={() => setStatTab('products')}
+            >
+              🛒 Składniki
+            </button>
+          </div>
+
+          <div
+            style={{
+              maxHeight: isMobile && isLandscape ? '70vh' : '65vh',
+              overflowY: 'auto',
+              paddingRight: '5px',
+            }}
+          >
+            {/* ZAKŁADKA 1: PODSUMOWANIE */}
+            {statTab === 'summary' && (
+              <>
+                <div
+                  style={{
+                    ...statBoxS,
+                    background:
+                      'linear-gradient(135deg, #10B981 0%, #059669 100%)',
+                    color: 'white',
+                    border: 'none',
+                  }}
+                >
+                  <h4
+                    style={{
+                      margin: '0 0 10px 0',
+                      fontSize: '14px',
+                      opacity: 0.9,
+                    }}
+                  >
+                    Obecny miesiąc ({advancedStats.currentMonthLabel})
+                  </h4>
+                  <div style={{ fontSize: '36px', fontWeight: '900' }}>
+                    {advancedStats.currentMonthCost} zł
+                  </div>
                 </div>
-              ))}
-            </div>
-            <div style={statBoxS}>
-              <h4 style={statLabelS}>⭐ Najczęściej używane produkty</h4>
-              {advancedStats.topByCount.map(([name, data]) => (
-                <div key={name} style={statRowS}>
-                  <span>{name}</span>
-                  <small>{data.count}x w planie</small>
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: '1fr 1fr',
+                    gap: '15px',
+                    marginBottom: '15px',
+                  }}
+                >
+                  <div style={{ ...statBoxS, marginBottom: 0 }}>
+                    <div
+                      style={{
+                        color: '#64748b',
+                        fontSize: '12px',
+                        fontWeight: 'bold',
+                      }}
+                    >
+                      ŚREDNIO DZIENNIE
+                    </div>
+                    <div
+                      style={{
+                        fontSize: '24px',
+                        fontWeight: '800',
+                        color: '#1e293b',
+                      }}
+                    >
+                      {advancedStats.avgDailyCost} zł
+                    </div>
+                  </div>
+                  <div style={{ ...statBoxS, marginBottom: 0 }}>
+                    <div
+                      style={{
+                        color: '#64748b',
+                        fontSize: '12px',
+                        fontWeight: 'bold',
+                      }}
+                    >
+                      ZAPLANOWANE POSIŁKI
+                    </div>
+                    <div
+                      style={{
+                        fontSize: '24px',
+                        fontWeight: '800',
+                        color: '#1e293b',
+                      }}
+                    >
+                      {advancedStats.plannedMealsCount}
+                    </div>
+                  </div>
                 </div>
-              ))}
-            </div>
-            <div style={statBoxS}>
-              <h4 style={statLabelS}>💸 Największe wydatki (suma)</h4>
-              {advancedStats.topByCost.map(([name, data]) => (
-                <div key={name} style={statRowS}>
-                  <span>{name}</span>
-                  <b style={{ color: '#e11d48' }}>
-                    {data.totalCost.toFixed(2)} zł
-                  </b>
+              </>
+            )}
+
+            {/* ZAKŁADKA 2: WYDATKI */}
+            {statTab === 'expenses' && (
+              <>
+                <div style={statBoxS}>
+                  <h4 style={statLabelS}>Koszt na typ posiłku</h4>
+                  {advancedStats.mealTypeCosts.map(([type, cost]) => {
+                    const widthPct =
+                      advancedStats.maxMealType > 0
+                        ? (cost / advancedStats.maxMealType) * 100
+                        : 0;
+                    return (
+                      <div key={type} style={{ marginBottom: '12px' }}>
+                        <div
+                          style={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            fontSize: '12px',
+                            marginBottom: '4px',
+                            fontWeight: 'bold',
+                            color: '#475569',
+                          }}
+                        >
+                          <span>{type}</span>
+                          <span>{cost.toFixed(2)} zł</span>
+                        </div>
+                        <div
+                          style={{
+                            width: '100%',
+                            height: '12px',
+                            background: '#f1f5f9',
+                            borderRadius: '6px',
+                            overflow: 'hidden',
+                          }}
+                        >
+                          <div
+                            style={{
+                              width: `${widthPct}%`,
+                              height: '100%',
+                              background:
+                                'linear-gradient(90deg, #34d399 0%, #059669 100%)',
+                              borderRadius: '6px',
+                              transition: 'width 0.5s ease-out',
+                            }}
+                          ></div>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
-              ))}
-            </div>
+
+                <div style={statBoxS}>
+                  <h4 style={statLabelS}>Historia miesięcy</h4>
+                  {advancedStats.monthly.map(([label, total]) => {
+                    const widthPct =
+                      advancedStats.maxMonthly > 0
+                        ? (total / advancedStats.maxMonthly) * 100
+                        : 0;
+                    return (
+                      <div key={label} style={{ marginBottom: '12px' }}>
+                        <div
+                          style={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            fontSize: '12px',
+                            marginBottom: '4px',
+                            fontWeight: 'bold',
+                            color: '#475569',
+                          }}
+                        >
+                          <span>{label}</span>
+                          <span>{total.toFixed(2)} zł</span>
+                        </div>
+                        <div
+                          style={{
+                            width: '100%',
+                            height: '12px',
+                            background: '#f1f5f9',
+                            borderRadius: '6px',
+                            overflow: 'hidden',
+                          }}
+                        >
+                          <div
+                            style={{
+                              width: `${widthPct}%`,
+                              height: '100%',
+                              background: '#3b82f6',
+                              borderRadius: '6px',
+                              transition: 'width 0.5s ease-out',
+                            }}
+                          ></div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+
+            {/* ZAKŁADKA 3: PRODUKTY */}
+            {statTab === 'products' && (
+              <>
+                <div style={statBoxS}>
+                  <h4 style={statLabelS}>💸 Najdroższe składniki (Suma)</h4>
+                  {advancedStats.topByCost.map(([name, data]) => {
+                    const widthPct =
+                      advancedStats.maxIngCost > 0
+                        ? (data.totalCost / advancedStats.maxIngCost) * 100
+                        : 0;
+                    return (
+                      <div key={name} style={{ marginBottom: '12px' }}>
+                        <div
+                          style={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            fontSize: '12px',
+                            marginBottom: '4px',
+                            fontWeight: 'bold',
+                            color: '#475569',
+                          }}
+                        >
+                          <span>{name}</span>
+                          <span style={{ color: '#e11d48' }}>
+                            {data.totalCost.toFixed(2)} zł
+                          </span>
+                        </div>
+                        <div
+                          style={{
+                            width: '100%',
+                            height: '8px',
+                            background: '#f1f5f9',
+                            borderRadius: '4px',
+                            overflow: 'hidden',
+                          }}
+                        >
+                          <div
+                            style={{
+                              width: `${widthPct}%`,
+                              height: '100%',
+                              background: '#fb7185',
+                              borderRadius: '4px',
+                            }}
+                          ></div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div style={statBoxS}>
+                  <h4 style={statLabelS}>⭐ Najczęściej kupowane</h4>
+                  {advancedStats.topByCount.map(([name, data]) => (
+                    <div key={name} style={statRowS}>
+                      <span
+                        style={{
+                          fontSize: '13px',
+                          fontWeight: 'bold',
+                          color: '#1e293b',
+                        }}
+                      >
+                        {name}
+                      </span>
+                      <div
+                        style={{
+                          background: '#fef3c7',
+                          color: '#d97706',
+                          padding: '2px 8px',
+                          borderRadius: '10px',
+                          fontSize: '12px',
+                          fontWeight: 'bold',
+                        }}
+                      >
+                        {data.count}x w planie
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
         </Modal>
       )}
@@ -825,8 +1349,14 @@ export default function App() {
           title="🛒 Dodaj do listy"
           onClose={() => setActiveModal(null)}
           isMobile={isMobile}
+          isLandscape={isLandscape}
         >
-          <div style={{ maxHeight: '60vh', overflowY: 'auto' }}>
+          <div
+            style={{
+              maxHeight: isMobile && isLandscape ? '85vh' : '60vh',
+              overflowY: 'auto',
+            }}
+          >
             <h4 style={{ fontSize: '14px' }}>Z przepisu:</h4>
             {recipes
               .sort((a, b) => b.is_favorite - a.is_favorite)
@@ -889,11 +1419,113 @@ export default function App() {
           title="👨‍🍳 Przepisy"
           onClose={() => setActiveModal(null)}
           isMobile={isMobile}
+          isLandscape={isLandscape}
         >
           <div
             className="recipe-scroll-container"
-            style={{ maxHeight: '75vh', overflowY: 'auto' }}
+            style={{
+              maxHeight: isMobile && isLandscape ? '85vh' : '75vh',
+              overflowY: 'auto',
+              paddingRight: '5px',
+            }}
           >
+            {/* --- AKORDEON: ASYSTENT AI --- */}
+            <div
+              style={{
+                ...formBoxS,
+                background: '#f5f3ff',
+                borderColor: '#c4b5fd',
+                marginBottom: '15px',
+              }}
+            >
+              <div
+                onClick={() => setShowAiPanel(!showAiPanel)}
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  cursor: 'pointer',
+                }}
+              >
+                <h4 style={{ margin: 0, color: '#6d28d9', fontSize: '14px' }}>
+                  ✨ Asystent AI
+                </h4>
+                <span style={{ color: '#6d28d9', fontWeight: 'bold' }}>
+                  {showAiPanel ? '▲' : '▼'}
+                </span>
+              </div>
+
+              {showAiPanel && (
+                <div style={{ marginTop: '15px' }}>
+                  <div
+                    style={{
+                      display: 'flex',
+                      gap: '8px',
+                      marginBottom: '10px',
+                    }}
+                  >
+                    <input
+                      style={{
+                        ...inputS,
+                        marginBottom: 0,
+                        flex: 1,
+                        borderColor: '#c4b5fd',
+                      }}
+                      placeholder="Wklej link do przepisu..."
+                      value={aiUrl}
+                      onChange={(e) => setAiUrl(e.target.value)}
+                      disabled={isAiLoading}
+                    />
+                    <button
+                      onClick={handleAiRecipeFromUrl}
+                      style={{
+                        ...btnPrim,
+                        background: '#8b5cf6',
+                        whiteSpace: 'nowrap',
+                      }}
+                      disabled={isAiLoading || !aiUrl}
+                    >
+                      {isAiLoading ? '⏳...' : 'Pobierz'}
+                    </button>
+                  </div>
+
+                  <div
+                    style={{
+                      textAlign: 'center',
+                      color: '#8b5cf6',
+                      fontSize: '12px',
+                      fontWeight: 'bold',
+                      margin: '10px 0',
+                    }}
+                  >
+                    LUB
+                  </div>
+
+                  <label
+                    style={{
+                      ...btnPrim,
+                      display: 'block',
+                      textAlign: 'center',
+                      background: '#8b5cf6',
+                      fontSize: '14px',
+                      padding: '10px',
+                      cursor: 'pointer',
+                      opacity: isAiLoading ? 0.7 : 1,
+                    }}
+                  >
+                    {isAiLoading ? '⏳ Pracuję...' : '📷 Wczytaj ze zdjęcia'}
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={handleAiRecipeScan}
+                      style={{ display: 'none' }}
+                      disabled={isAiLoading}
+                    />
+                  </label>
+                </div>
+              )}
+            </div>
+
             <div style={formBoxS}>
               <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
                 <input
@@ -946,7 +1578,7 @@ export default function App() {
                 />
               </label>
               <textarea
-                style={inputS}
+                style={{ ...inputS, minHeight: '80px' }}
                 placeholder="Opis..."
                 value={newRecipe.instructions}
                 onChange={(e) =>
@@ -1031,7 +1663,15 @@ export default function App() {
               )}
               {newRecipe.ingredients.map((ing, idx) => (
                 <div key={idx} style={ingRowS}>
-                  <span style={{ fontSize: '12px', flex: 1 }}>{ing.name}</span>
+                  <span
+                    style={{
+                      fontSize: '12px',
+                      flex: 1,
+                      color: ing.id ? '#1e293b' : '#ef4444',
+                    }}
+                  >
+                    {ing.name}
+                  </span>
                   <div style={{ display: 'flex', gap: '5px' }}>
                     <input
                       type="number"
@@ -1140,7 +1780,11 @@ export default function App() {
                     </button>
                     <button
                       onClick={async () => {
-                        if (confirm('Usunąć przepis z bazy?')) {
+                        if (
+                          confirm(
+                            'Usunąć przepis z bazy? Zniknie on ze wszystkich dni w kalendarzu.'
+                          )
+                        ) {
                           await supabase
                             .from('meal_plan')
                             .delete()
@@ -1173,6 +1817,7 @@ export default function App() {
           title="📦 Baza Produktów"
           onClose={() => setActiveModal(null)}
           isMobile={isMobile}
+          isLandscape={isLandscape}
         >
           <div style={formBoxS}>
             <input
@@ -1232,7 +1877,12 @@ export default function App() {
               </button>
             )}
           </div>
-          <div style={{ maxHeight: '300px', overflowY: 'auto' }}>
+          <div
+            style={{
+              maxHeight: isMobile && isLandscape ? '85vh' : '300px',
+              overflowY: 'auto',
+            }}
+          >
             {products.map((p) => (
               <div key={p.id} style={productRowS}>
                 <div style={{ fontSize: '13px' }}>
@@ -1257,7 +1907,11 @@ export default function App() {
                   </button>
                   <button
                     onClick={async () => {
-                      if (confirm('Usunąć produkt z bazy?')) {
+                      if (
+                        confirm(
+                          'Usunąć produkt z bazy? Zostanie on usunięty ze wszystkich Twoich przepisów.'
+                        )
+                      ) {
                         await supabase
                           .from('recipe_ingredients')
                           .delete()
@@ -1283,6 +1937,7 @@ export default function App() {
           title={viewingRecipe.name}
           onClose={() => setActiveModal(null)}
           isMobile={isMobile}
+          isLandscape={isLandscape}
         >
           <button
             style={{
@@ -1316,24 +1971,66 @@ export default function App() {
               Kroki
             </button>
           </div>
-          <div style={{ maxHeight: '50vh', overflowY: 'auto' }}>
+          <div
+            style={{
+              maxHeight: isMobile && isLandscape ? '85vh' : '50vh',
+              overflowY: 'auto',
+              paddingRight: '5px',
+            }}
+          >
             {viewMode === 'desc' ? (
-              <p
-                style={{
-                  whiteSpace: 'pre-wrap',
-                  background: '#f8fafc',
-                  padding: '15px',
-                  borderRadius: '10px',
-                  fontSize: '14px',
-                }}
-              >
-                {viewingRecipe.instructions || 'Brak opisu.'}
-              </p>
+              <>
+                <div style={{ marginBottom: '15px' }}>
+                  <h4 style={{ margin: '0 0 10px 0', color: '#1e293b' }}>
+                    Składniki:
+                  </h4>
+                  <div
+                    style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}
+                  >
+                    {viewingRecipe.recipe_ingredients?.map((ri, idx) => (
+                      <div
+                        key={idx}
+                        style={{
+                          background: '#f1f5f9',
+                          padding: '6px 12px',
+                          borderRadius: '8px',
+                          fontSize: '13px',
+                          color: '#475569',
+                        }}
+                      >
+                        <b>{ri.products?.name}</b> - {ri.amount}{' '}
+                        {ri.products?.unit}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <h4 style={{ margin: '0 0 10px 0', color: '#1e293b' }}>
+                  Opis przygotowania:
+                </h4>
+                <p
+                  style={{
+                    whiteSpace: 'pre-wrap',
+                    background: '#f8fafc',
+                    padding: '15px',
+                    borderRadius: '10px',
+                    fontSize: '14px',
+                    lineHeight: '1.6',
+                    margin: 0,
+                  }}
+                >
+                  {viewingRecipe.instructions || 'Brak opisu.'}
+                </p>
+              </>
             ) : viewingRecipe.steps?.length > 0 ? (
               viewingRecipe.steps.map((s, i) => (
                 <div key={i} style={stepItemS}>
                   <div style={stepCircleS}>{i + 1}</div>
-                  <div style={{ flex: 1, fontSize: '14px' }}>{s}</div>
+                  <div style={{ flex: 1, fontSize: '14px', lineHeight: '1.6' }}>
+                    {renderStepWithIngredients(
+                      s,
+                      viewingRecipe.recipe_ingredients
+                    )}
+                  </div>
                 </div>
               ))
             ) : (
@@ -1354,13 +2051,19 @@ export default function App() {
       {/* --- TRYB GOTOWANIA (PEŁNY EKRAN) --- */}
       {activeModal === 'cooking-mode' && viewingRecipe && (
         <div style={cookingOverlayS}>
-          <div style={cookingCardS}>
+          <div
+            style={{
+              ...cookingCardS,
+              maxHeight: isMobile && isLandscape ? '90vh' : 'auto',
+              overflowY: isMobile && isLandscape ? 'auto' : 'visible',
+            }}
+          >
             <div
               style={{
                 display: 'flex',
                 justifyContent: 'space-between',
                 alignItems: 'center',
-                marginBottom: '30px',
+                marginBottom: '15px',
               }}
             >
               <button
@@ -1368,7 +2071,7 @@ export default function App() {
                   setIsVoiceActive(false);
                   setActiveModal('view-recipe');
                 }}
-                style={btnSec}
+                style={{ ...btnSec, padding: '8px 16px' }}
               >
                 ⬅ Powrót
               </button>
@@ -1382,6 +2085,7 @@ export default function App() {
                   display: 'flex',
                   alignItems: 'center',
                   gap: '8px',
+                  padding: '8px 16px',
                 }}
               >
                 {isVoiceActive ? '🔴 Nasłuchuję...' : '🎙️ Sterowanie Głosem'}
@@ -1392,60 +2096,66 @@ export default function App() {
               style={{
                 color: '#059669',
                 fontWeight: 'bold',
-                marginBottom: '10px',
+                marginBottom: '5px',
+                textAlign: 'center',
               }}
             >
               KROK {cookingStep + 1} Z {viewingRecipe.steps?.length || 0}
             </div>
 
-            {/* DUŻY TEKST KROKU */}
+            {isVoiceActive && (
+              <div
+                style={{
+                  fontSize: '12px',
+                  color: '#64748b',
+                  fontStyle: 'italic',
+                  marginBottom: '10px',
+                  textAlign: 'center',
+                }}
+              >
+                Słyszę: {lastHeard ? `"${lastHeard}"` : 'Czekam na komendę...'}
+              </div>
+            )}
+
             <div
               style={{
-                fontSize: isMobile ? '22px' : '32px',
-                fontWeight: 'bold',
+                fontSize: isMobile ? '24px' : '36px',
+                fontWeight: '500',
                 color: '#1e293b',
-                minHeight: '150px',
+                minHeight: isMobile && isLandscape ? '100px' : '200px',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
                 margin: '20px 0',
-                lineHeight: '1.4',
+                lineHeight: '1.6',
+                textAlign: 'center',
+                flexDirection: 'column',
+                gap: '15px',
               }}
             >
-              {viewingRecipe.steps?.[cookingStep] || 'Brak treści kroku.'}
+              <div>
+                {renderStepWithIngredients(
+                  viewingRecipe.steps?.[cookingStep],
+                  viewingRecipe.recipe_ingredients
+                )}
+              </div>
             </div>
 
-            {/* INTELIGENTNE PIGUŁKI SKŁADNIKÓW */}
             <div
               style={{
                 display: 'flex',
-                flexWrap: 'wrap',
-                gap: '10px',
-                justifyContent: 'center',
-                minHeight: '50px',
+                gap: '15px',
+                marginTop: 'auto',
+                paddingTop: '20px',
               }}
             >
-              {getIngredientsForStep(
-                viewingRecipe.steps?.[cookingStep],
-                viewingRecipe.recipe_ingredients
-              ).map((ri, idx) => (
-                <div key={idx} style={smartPillS}>
-                  🥑 {ri.products.name}{' '}
-                  <b>
-                    {ri.amount} {ri.products.unit}
-                  </b>
-                </div>
-              ))}
-            </div>
-
-            {/* NAWIGACJA KROKÓW */}
-            <div style={{ display: 'flex', gap: '15px', marginTop: '40px' }}>
               <button
                 style={{
                   ...btnSuccessFull,
                   background: '#f1f5f9',
                   color: '#475569',
                   flex: 1,
+                  fontSize: '18px',
                 }}
                 onClick={() => setCookingStep((prev) => Math.max(prev - 1, 0))}
                 disabled={cookingStep === 0}
@@ -1453,7 +2163,7 @@ export default function App() {
                 Wstecz
               </button>
               <button
-                style={{ ...btnSuccessFull, flex: 2 }}
+                style={{ ...btnSuccessFull, flex: 1, fontSize: '18px' }}
                 onClick={() => {
                   if (cookingStep === viewingRecipe.steps.length - 1) {
                     setActiveModal('view-recipe');
@@ -1480,6 +2190,7 @@ export default function App() {
           title={`Wybierz posiłek: ${selectedCell?.type}`}
           onClose={() => setActiveModal(null)}
           isMobile={isMobile}
+          isLandscape={isLandscape}
         >
           <div style={filterBar}>
             {['Wszystkie', ...MEAL_TYPES].map((cat) => (
@@ -1498,7 +2209,12 @@ export default function App() {
               </button>
             ))}
           </div>
-          <div style={{ maxHeight: '350px', overflowY: 'auto' }}>
+          <div
+            style={{
+              maxHeight: isMobile && isLandscape ? '85vh' : '350px',
+              overflowY: 'auto',
+            }}
+          >
             {recipes
               .filter((r) => !filterCategory || r.category === filterCategory)
               .sort((a, b) => b.is_favorite - a.is_favorite)
@@ -1577,7 +2293,7 @@ function LoginView() {
   );
 }
 
-function Modal({ title, children, onClose, isMobile }) {
+function Modal({ title, children, onClose, isMobile, isLandscape }) {
   const mS = {
     background: 'white',
     padding: isMobile ? '15px' : '20px',
@@ -1587,6 +2303,9 @@ function Modal({ title, children, onClose, isMobile }) {
     zIndex: 1100,
     position: 'relative',
     boxSizing: 'border-box',
+    maxHeight: isMobile && isLandscape ? '95vh' : 'auto',
+    display: 'flex',
+    flexDirection: 'column',
   };
   return (
     <div style={overlayS} onClick={onClose}>
@@ -1597,6 +2316,7 @@ function Modal({ title, children, onClose, isMobile }) {
             justifyContent: 'space-between',
             marginBottom: '15px',
             alignItems: 'center',
+            flexShrink: 0,
           }}
         >
           <h3 style={{ margin: 0, fontSize: '18px' }}>{title}</h3>
@@ -1625,6 +2345,7 @@ const appContainer = {
   backgroundColor: '#f8fafc',
   minHeight: '100vh',
   fontFamily: '-apple-system, sans-serif',
+  overflowX: 'hidden',
 };
 const headerStyle = {
   display: 'flex',
@@ -1926,6 +2647,7 @@ const productRowS = {
   padding: '12px 10px',
   borderBottom: '1px solid #f1f5f9',
   alignItems: 'center',
+  flexShrink: 0,
 };
 const recipeListItem = {
   padding: '12px 10px',
@@ -1934,6 +2656,7 @@ const recipeListItem = {
   display: 'flex',
   justifyContent: 'space-between',
   alignItems: 'center',
+  flexShrink: 0,
 };
 const searchResultsS = {
   background: 'white',
@@ -2004,6 +2727,7 @@ const formBoxS = {
   borderRadius: '16px',
   marginBottom: '15px',
   border: '1px solid #e2e8f0',
+  flexShrink: 0,
 };
 const stepItemS = {
   padding: '12px',
@@ -2016,8 +2740,8 @@ const stepItemS = {
   alignItems: 'center',
 };
 const stepCircleS = {
-  width: '24px',
-  height: '24px',
+  width: '28px',
+  height: '28px',
   background: '#059669',
   color: 'white',
   borderRadius: '50%',
@@ -2025,7 +2749,7 @@ const stepCircleS = {
   alignItems: 'center',
   justifyContent: 'center',
   fontWeight: 'bold',
-  fontSize: '11px',
+  fontSize: '13px',
   flexShrink: 0,
 };
 const fileLabelS = {
@@ -2073,7 +2797,6 @@ const statLabelS = {
   paddingBottom: '4px',
 };
 
-// Style dla Trybu Gotowania
 const cookingOverlayS = { ...overlayS, background: 'rgba(15, 23, 42, 0.98)' };
 const cookingCardS = {
   background: 'white',
@@ -2085,11 +2808,21 @@ const cookingCardS = {
   display: 'flex',
   flexDirection: 'column',
 };
-const smartPillS = {
-  background: '#ecfdf5',
+
+// --- NOWE STYLE DO ZAKŁADEK W STATYSTYKACH ---
+const statTabBtn = {
+  background: 'transparent',
+  color: '#64748b',
+  border: 'none',
+  padding: '8px 12px',
+  fontSize: '13px',
+  fontWeight: 'bold',
+  cursor: 'pointer',
+  whiteSpace: 'nowrap',
+};
+const statTabActive = {
+  ...statTabBtn,
   color: '#059669',
-  padding: '8px 16px',
-  borderRadius: '20px',
-  border: '1px solid #34d399',
-  fontSize: '14px',
+  borderBottom: '3px solid #059669',
+  paddingBottom: '5px',
 };
