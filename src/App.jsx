@@ -1,7 +1,3 @@
-// const SUPABASE_URL = 'TWÓJ_URL';
-// const SUPABASE_ANON_KEY = 'TWÓJ_KLUCZ';
-// const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { createClient } from '@supabase/supabase-js';
 
@@ -99,17 +95,18 @@ export default function App() {
   const [recipeListCategory, setRecipeListCategory] = useState(''); 
   const [statTab, setStatTab] = useState('summary'); 
 
-  // Tryb gotowania
+  // --- STANY DLA TRYBU GOTOWANIA ---
   const [cookingStep, setCookingStep] = useState(0);
-  const [isVoiceActive, setIsVoiceActive] = useState(false);
-  const [isTtsActive, setIsTtsActive] = useState(false); 
+  const [isVoiceActive, setIsVoiceActive] = useState(false); // Główny włącznik użytkownika
+  const [isMicPaused, setIsMicPaused] = useState(false);     // Wirtualne kliknięcie (pauza aplikacji)
+  const [isTtsActive, setIsTtsActive] = useState(false);     // Lektor
   const [lastHeard, setLastHeard] = useState(''); 
   const [repeatTrigger, setRepeatTrigger] = useState(0); 
   
   const recognitionRef = useRef(null);
   const isVoiceActiveRef = useRef(isVoiceActive);
+  const isMicPausedRef = useRef(isMicPaused);
   const isTtsActiveRef = useRef(isTtsActive);
-  const isProcessingCmdRef = useRef(false); // Blokada na czas wykonywania komendy
   const stepsLengthRef = useRef(0); 
 
   const [isAiLoading, setIsAiLoading] = useState(false); 
@@ -184,15 +181,16 @@ export default function App() {
     }
   }, [viewingRecipe]);
 
-  // Utrzymywanie refa dla TTS
-  useEffect(() => {
-    isTtsActiveRef.current = isTtsActive;
-  }, [isTtsActive]);
+  // Synchronizacja refów ze stanami
+  useEffect(() => { isTtsActiveRef.current = isTtsActive; }, [isTtsActive]);
+  useEffect(() => { isMicPausedRef.current = isMicPaused; }, [isMicPaused]);
+  useEffect(() => { isVoiceActiveRef.current = isVoiceActive; }, [isVoiceActive]);
 
-  // --- POPRAWIONY LEKTOR Z RESETOWANIEM MIKROFONU PO ZAKOŃCZENIU CZYTANIA ---
+  // --- EFEKT: LEKTOR ---
   useEffect(() => {
     if (activeModal === 'cooking-mode' && isTtsActive && viewingRecipe?.steps) {
       window.speechSynthesis.cancel(); 
+      setIsMicPaused(true); // Wyłącza mikrofon, żeby nie słyszał samego siebie
       
       const stepText = viewingRecipe.steps[cookingStep];
       if (stepText) {
@@ -201,36 +199,20 @@ export default function App() {
         utterance.lang = 'pl-PL';
         utterance.rate = 1.0; 
         
-        // Po zakończeniu czytania odblokuj nasłuchiwanie
-        utterance.onend = () => {
-          isProcessingCmdRef.current = false;
-          if (isVoiceActiveRef.current && recognitionRef.current) {
-            try { recognitionRef.current.start(); } catch(e) {}
-          }
-        };
-
-        // Zabezpieczenie na wypadek błędu czytania
-        utterance.onerror = () => {
-          isProcessingCmdRef.current = false;
-          if (isVoiceActiveRef.current && recognitionRef.current) {
-            try { recognitionRef.current.start(); } catch(e) {}
-          }
-        };
+        // Zdejmuje pauzę mikrofonu, kiedy skończy mówić
+        utterance.onend = () => setIsMicPaused(false);
+        utterance.onerror = () => setIsMicPaused(false);
         
         setTimeout(() => {
           window.speechSynthesis.speak(utterance);
         }, 150);
       } else {
-        // Jeśli nie ma tekstu, po prostu odblokuj mikrofon
-        isProcessingCmdRef.current = false;
-        if (isVoiceActiveRef.current && recognitionRef.current) {
-          try { recognitionRef.current.start(); } catch(e) {}
-        }
+        setIsMicPaused(false);
       }
     }
   }, [cookingStep, activeModal, isTtsActive, viewingRecipe, repeatTrigger]);
 
-  // --- NOWY MECHANIZM PAUZOWANIA I WZNAWIANIA NASŁUCHIWANIA ---
+  // --- EFEKT: INICJALIZACJA ROZPOZNAWANIA MOWY (Tylko raz) ---
   useEffect(() => {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
@@ -240,12 +222,10 @@ export default function App() {
 
     const recognition = new SpeechRecognition();
     recognition.lang = 'pl-PL';
-    recognition.continuous = false; // Rozpoznaje i kończy
+    recognition.continuous = false; // "Walkie-Talkie" mode
     recognition.interimResults = false; 
 
     recognition.onresult = (event) => {
-      if (isProcessingCmdRef.current) return; // Zapobiegaj dublowaniu
-
       const lastResult = event.results[event.results.length - 1];
       let transcript = lastResult[0].transcript.toLowerCase().trim();
       transcript = transcript.replace(/[.,!?]/g, '');
@@ -257,9 +237,8 @@ export default function App() {
       const matchClose = /(zamknij|koniec|zakończ)/i.test(transcript);
 
       if (matchForward || matchBackward || matchRepeat || matchClose) {
-        isProcessingCmdRef.current = true; // Blokada
-        recognition.stop(); // Wymuszamy zatrzymanie na czas przetwarzania
-
+        setIsMicPaused(true); // "Wirtualne odkliknięcie"
+        
         if (matchForward) {
           setCookingStep(prev => Math.min(prev + 1, Math.max(0, stepsLengthRef.current - 1)));
         } else if (matchBackward) {
@@ -268,20 +247,17 @@ export default function App() {
           setRepeatTrigger(prev => prev + 1); 
         } else if (matchClose) {
           setIsVoiceActive(false);
+          setIsMicPaused(false);
           window.speechSynthesis.cancel();
           setActiveModal('view-recipe');
-          isProcessingCmdRef.current = false;
           return;
         }
 
-        // Jeśli lektor jest WYŁĄCZONY, odczekaj chwile i wznów nasłuchiwanie
+        // Jeśli lektor nie czyta (jest wyłączony), odklikujemy mikrofon z powrotem sami
         if (!isTtsActiveRef.current) {
           setTimeout(() => {
-            isProcessingCmdRef.current = false;
-            if (isVoiceActiveRef.current && recognitionRef.current) {
-              try { recognitionRef.current.start(); } catch(e) {}
-            }
-          }, 1000); // 1 sekunda przerwy między komendami
+            setIsMicPaused(false); // "Wirtualne zakliknięcie z powrotem"
+          }, 1500);
         }
       }
     };
@@ -289,13 +265,13 @@ export default function App() {
     recognition.onerror = (event) => {
       if (event.error === 'not-allowed') {
         setIsVoiceActive(false);
-        isProcessingCmdRef.current = false;
+        setIsMicPaused(false);
       }
     };
 
     recognition.onend = () => {
-      // Automatyczny restart TYLKO jeśli tryb jest włączony i NIE przetwarzamy akurat komendy
-      if (isVoiceActiveRef.current && !isProcessingCmdRef.current) {
+      // Mikrofon zgasł. Odpalamy ponownie, TYLKO jeśli użytkownik chce i nie jesteśmy zapauzowani!
+      if (isVoiceActiveRef.current && !isMicPausedRef.current) {
         setTimeout(() => {
           try { recognitionRef.current.start(); } catch(e) {}
         }, 150);
@@ -313,21 +289,22 @@ export default function App() {
     };
   }, []);
 
+  // --- EFEKT: WŁĄCZ/WYŁĄCZ (Na podstawie stanu `isVoiceActive` i `isMicPaused`) ---
   useEffect(() => {
-    isVoiceActiveRef.current = isVoiceActive;
-    if (isVoiceActive) {
-      if (!isProcessingCmdRef.current && recognitionRef.current) {
-        setLastHeard('');
-        try { recognitionRef.current.start(); } catch(e) {}
-      }
+    if (isVoiceActive && !isMicPaused) {
+      // Wszystko zielone światło -> odpal mikrofon
+      setLastHeard('');
+      try { recognitionRef.current?.start(); } catch(e) {}
     } else {
-      if (recognitionRef.current) {
-        recognitionRef.current.stop();
-      }
-      window.speechSynthesis.cancel();
-      isProcessingCmdRef.current = false;
+      // Zatrzymane ręcznie LUB trwa wirtualna pauza -> ubij mikrofon
+      try { recognitionRef.current?.stop(); } catch(e) {}
     }
-  }, [isVoiceActive]);
+
+    if (!isVoiceActive) {
+      window.speechSynthesis.cancel();
+    }
+  }, [isVoiceActive, isMicPaused]);
+
 
   async function fetchData() {
     const { data: prods } = await supabase.from('products').select('*').order('name');
@@ -464,14 +441,7 @@ export default function App() {
     }
 
     let jsonText = data.candidates[0].content.parts[0].text;
-    
-    const firstBrace = jsonText.indexOf('{');
-    const lastBrace = jsonText.lastIndexOf('}');
-    if (firstBrace !== -1 && lastBrace !== -1) {
-      jsonText = jsonText.substring(firstBrace, lastBrace + 1);
-    } else {
-      throw new Error("AI nie zwróciło poprawnego formatu JSON.");
-    }
+    jsonText = jsonText.replace(/```json\n?/gi, '').replace(/```/gi, '').trim();
 
     const aiRecipe = JSON.parse(jsonText);
 
@@ -515,7 +485,7 @@ export default function App() {
     const file = e.target.files[0];
     if (!file) return;
     if (!GEMINI_API_KEY) {
-      alert("Brak klucza API! Dodaj VITE_GEMINI_API_KEY do pliku .env");
+      alert("Brak klucza API! Dodaj VITE_GEMINI_API_KEY do GitHub Secrets i przebuduj apkę.");
       return;
     }
 
@@ -538,7 +508,7 @@ export default function App() {
         ]
       }`;
 
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent?key=${GEMINI_API_KEY}`, {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${GEMINI_API_KEY}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -567,7 +537,7 @@ export default function App() {
   const handleAiRecipeFromUrl = async () => {
     if (!aiUrl) return;
     if (!GEMINI_API_KEY) {
-      alert("Brak klucza API! Dodaj VITE_GEMINI_API_KEY do pliku .env");
+      alert("Brak klucza API! Dodaj VITE_GEMINI_API_KEY do GitHub Secrets i przebuduj apkę.");
       return;
     }
 
@@ -583,7 +553,7 @@ export default function App() {
         ]
       }`;
 
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent?key=${GEMINI_API_KEY}`, {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.0-flash-preview:generateContent?key=${GEMINI_API_KEY}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1391,13 +1361,14 @@ export default function App() {
                   onClick={() => setIsVoiceActive(!isVoiceActive)} 
                   style={{
                     ...btnSec, 
-                    background: isVoiceActive ? '#fee2e2' : '#f1f5f9',
-                    color: isVoiceActive ? '#ef4444' : '#475569',
+                    background: isVoiceActive ? (isMicPaused ? '#fef08a' : '#fee2e2') : '#f1f5f9',
+                    color: isVoiceActive ? (isMicPaused ? '#854d0e' : '#ef4444') : '#475569',
                     display: 'flex', alignItems: 'center', gap: '8px',
-                    padding: '8px 16px'
+                    padding: '8px 16px',
+                    transition: 'all 0.3s'
                   }}
                 >
-                  {isVoiceActive ? '🔴 Nasłuchuję...' : '🎙️ Mikrofon'}
+                  {isVoiceActive ? (isMicPaused ? '⏳ Wykonuję...' : '🔴 Nasłuchuję...') : '🎙️ Mikrofon'}
                 </button>
               </div>
             </div>
